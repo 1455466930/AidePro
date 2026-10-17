@@ -188,6 +188,9 @@ class CaptureRepository(private val dao: CaptureDao) {
      */
     suspend fun deleteSessions(ids: List<String>): Int {
         if (ids.isEmpty()) return 0
+        // 【先删堆栈】stack_record 没有外键约束，必须手动清，
+        // 否则删完会话会留下一堆指向不存在记录的孤儿堆栈
+        dao.deleteStacksBySessions(ids)
         dao.deleteHttpBySessions(ids)
         dao.deletePacketsBySessions(ids)
         dao.deleteSessions(ids)
@@ -228,6 +231,8 @@ class CaptureRepository(private val dao: CaptureDao) {
     /** 删除某一会话下的单条记录。 */
     suspend fun deleteHttpRecord(id: Long): Boolean {
         val rec = dao.httpById(id) ?: return false
+        // 【级联】删记录时一并删掉它的调用栈
+        dao.deleteStackOf(id)
         dao.deleteHttp(listOf(id))
         bumpCount(rec.sessionId)
         return true
@@ -323,8 +328,31 @@ class CaptureRepository(private val dao: CaptureDao) {
         }
     }
 
+    /**
+     * 清理孤儿堆栈（ownerId 指向的 http_record 已不存在）。
+     *
+     * 【为什么要这个】
+     * 早期版本的删除逻辑只删 http_record 不删 stack_record，
+     * 会留下大量指向不存在记录的堆栈。这里做一次性清理，
+     * 也可由 MCP 工具主动触发。
+     *
+     * @return 清理条数
+     */
+    suspend fun cleanupOrphanStacks(): Int = runCatching {
+        dao.deleteOrphanStacks()
+    }.getOrDefault(0)
+
     /** 读元数据（不含 BLOB）——【D1】信息类工具用，避免 CursorWindow 打爆。 */
     suspend fun httpMetaById(id: Long): HttpRecord? = dao.httpMetaById(id)?.toModel()
+
+    /**
+     * 某会话的 HTTP 记录（按时间正序）。
+     *
+     * network_packets 在 Hook 模式下的回退数据源 —— Hook 抓包拿不到
+     * 原始 TCP 报文，用 HTTP 请求序列代替"会话里发生了什么"。
+     */
+    suspend fun httpAsc(sessionId: String, limit: Int): List<HttpRecord> =
+        dao.httpAsc(sessionId, limit).map { it.toModel() }
 
     /**
      * 用 substr 切 HTTP body（BLOB 不进 CursorWindow）。
@@ -456,14 +484,18 @@ class CaptureRepository(private val dao: CaptureDao) {
             // 【D1】存在性判断用 meta（无 BLOB），避免大记录打爆 CursorWindow
             if (dao.httpMetaById(n) != null) httpIds += n else pktIds += n
         }
+        // 【级联】删 HTTP 记录时一并删掉它们的调用栈，避免留下孤儿堆栈
+        if (httpIds.isNotEmpty()) dao.deleteStacksOf(httpIds)
         if (httpIds.isNotEmpty()) dao.deleteHttp(httpIds)
         if (pktIds.isNotEmpty()) dao.deletePackets(pktIds)
         return httpIds.size + pktIds.size
     }
 
+    /** 清空所有抓包数据（含调用栈，避免遗留孤儿）。 */
     suspend fun clearAll() {
         dao.clearHttp()
         dao.clearPackets()
+        runCatching { dao.deleteOrphanStacks() }
         activeSessionId = null
     }
 

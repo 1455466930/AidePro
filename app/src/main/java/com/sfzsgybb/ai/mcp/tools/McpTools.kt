@@ -316,6 +316,30 @@ class CaptureStartStopTool(
     }
 }
 
+/**
+ * 清理孤儿堆栈。
+ *
+ * 早期版本删除 HTTP 记录时没有级联删 stack_record，
+ * 会留下大量指向不存在记录的堆栈。现在删除路径已经修好，
+ * 这个工具用于一次性清理历史遗留。
+ */
+class CleanupOrphanStacksTool(private val repo: CaptureRepository) : McpToolHandler {
+    override val name = "capture_cleanup_stacks"
+    override val description =
+        "清理孤儿调用栈（ownerId 指向的 HTTP 记录已不存在）。" +
+            "删除记录的行为现在会自动级联清理，本工具用于清理历史遗留数据。"
+
+    override val inputSchema = Schema.obj(properties = emptyMap())
+
+    override suspend fun execute(args: JsonObject): String {
+        val n = repo.cleanupOrphanStacks()
+        return buildJsonObject {
+            put("cleaned", n)
+            put("message", if (n > 0) "已清理 $n 条孤儿堆栈" else "没有孤儿堆栈需要清理")
+        }.toString()
+    }
+}
+
 class CaptureDeleteSessionsTool(private val repo: CaptureRepository) : McpToolHandler {
     override val name = "capture_delete_sessions"
     override val description = "删除指定会话及其全部流量记录。"
@@ -639,7 +663,9 @@ class NetworkInfoTool(private val repo: CaptureRepository) : McpToolHandler {
 
 class NetworkPacketsTool(private val repo: CaptureRepository) : McpToolHandler {
     override val name = "network_packets"
-    override val description = "列出某会话下的 TCP/WebSocket 报文序列（按时间升序），用于还原连接会话。"
+    override val description =
+        "列出某会话下的网络记录序列（按时间升序），用于还原连接会话。" +
+            "优先返回 TCP/WebSocket 报文；Hook 抓包模式没有原始报文，会自动回退成 HTTP 请求序列。"
 
     override val inputSchema = Schema.obj(
         properties = mapOf(
@@ -653,17 +679,53 @@ class NetworkPacketsTool(private val repo: CaptureRepository) : McpToolHandler {
         val a = Args(args)
         val sessionId = a.string("sessionId", required = true)!!
         val limit = a.int("limit", 100)!!.coerceIn(1, 300)
+
+        // 优先取原始报文（代理抓包才有）
         val packets = repo.packetsAsc(sessionId, limit)
+        if (packets.isNotEmpty()) {
+            return buildJsonObject {
+                put("mode", "packet")
+                put("count", packets.size)
+                putJsonArray("packets") {
+                    packets.forEach { p ->
+                        add(buildJsonObject {
+                            put("id", p.id)
+                            put("remoteAddress", p.remoteAddress)
+                            put("outbound", p.outbound)
+                            put("size", p.size)
+                            put("time", p.time)
+                            if (p.wsFrameType.isNotBlank()) put("wsFrameType", p.wsFrameType)
+                        })
+                    }
+                }
+            }.toString()
+        }
+
+        // 【回退】Hook 抓包不产生原始报文（Java 层拿不到字节流），
+        // 之前这里直接返回空数组，AI 会以为"什么都没抓到"。
+        // 现在改成回退到该会话的 HTTP 记录序列 —— 这才是用户真正想看的东西。
+        val http = repo.httpAsc(sessionId, limit)
+
         return buildJsonObject {
+            put("mode", "http")
+            put("count", http.size)
+            if (http.isEmpty()) {
+                put("emptyReason", "no_records")
+                put("hint", "该会话没有任何记录。确认目标应用已产生流量，或换一个 sessionId。")
+            } else {
+                put("note", "Hook 抓包模式无原始 TCP 报文，这里返回该会话的 HTTP 请求序列")
+            }
             putJsonArray("packets") {
-                packets.forEach { p ->
+                http.forEach { h ->
                     add(buildJsonObject {
-                        put("id", p.id)
-                        put("remoteAddress", p.remoteAddress)
-                        put("outbound", p.outbound)
-                        put("size", p.size)
-                        put("time", p.time)
-                        if (p.wsFrameType.isNotBlank()) put("wsFrameType", p.wsFrameType)
+                        put("id", h.id)
+                        put("kind", "http")
+                        put("method", h.method)
+                        put("url", h.url)
+                        put("statusCode", h.statusCode)
+                        put("remoteAddress", h.host)
+                        put("size", h.responseBody.size)
+                        put("time", h.time)
                     })
                 }
             }

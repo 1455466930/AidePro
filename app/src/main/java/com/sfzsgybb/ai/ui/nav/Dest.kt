@@ -11,7 +11,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 /**
  * 导航目的地。
  *
- * 对照原版 19 个 Activity，这里收敛为「底部 4 个主区 + 栈内二级页」：
+ * 对照原版 19 个 Activity，这里收敛为「底部 5 个主区 + 栈内二级页」：
  * 原版把 Hook 配置、抓包、日志、设置平铺成 19 个 Activity，
  * 层级靠 parentActivityName 维护，既难跳转也难回退。
  */

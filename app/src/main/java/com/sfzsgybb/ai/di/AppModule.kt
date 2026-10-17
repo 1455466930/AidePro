@@ -17,6 +17,7 @@ import com.sfzsgybb.ai.mcp.McpToolHandler
 import com.sfzsgybb.ai.mcp.McpToolSet
 import com.sfzsgybb.ai.mcp.tools.AppListProvider
 import com.sfzsgybb.ai.mcp.tools.CaptureDeleteSessionsTool
+import com.sfzsgybb.ai.mcp.tools.CleanupOrphanStacksTool
 import com.sfzsgybb.ai.mcp.tools.CaptureSessionsTool
 import com.sfzsgybb.ai.mcp.tools.CaptureStartStopTool
 import com.sfzsgybb.ai.mcp.tools.CaptureStatusTool
@@ -192,6 +193,7 @@ object AppModule {
         CaptureStartStopTool(captureRepo, start = true),
         CaptureStartStopTool(captureRepo, start = false),
         CaptureDeleteSessionsTool(captureRepo),
+        CleanupOrphanStacksTool(captureRepo),
         NetworkListTool(captureRepo),
         NetworkInfoTool(captureRepo),
         NetworkPacketsTool(captureRepo),

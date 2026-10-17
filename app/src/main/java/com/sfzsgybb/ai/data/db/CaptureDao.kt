@@ -146,6 +146,25 @@ interface CaptureDao {
     @Query("SELECT COUNT(*) FROM packet_data WHERE sessionId = :sessionId")
     suspend fun packetCount(sessionId: String): Long
 
+    /**
+     * 某会话的 HTTP 记录（按时间**正序**）。
+     *
+     * 【为什么需要】
+     * httpPage 是倒序游标分页（条件是 `time < afterTime`），
+     * 拿不到"从最早开始"的序列。network_packets 在 Hook 模式下
+     * 要按时间顺序还原请求序列，所以单独提供正序查询。
+     */
+    @Query(
+        """
+        SELECT id, sessionId, source, packageName, protocol, method, url, host, path,
+               httpVersion, statusCode, statusText, requestHeaders, responseHeaders,
+               requestBodyTruncated, responseBodyTruncated,
+               requestSize, responseSize, durationMs, time, mimeType
+        FROM http_record WHERE sessionId = :sessionId ORDER BY time ASC, id ASC LIMIT :limit
+        """
+    )
+    suspend fun httpAsc(sessionId: String, limit: Int): List<HttpRecordSummaryEntity>
+
     @Query("DELETE FROM packet_data WHERE id IN (:ids)")
     suspend fun deletePackets(ids: List<Long>)
 
@@ -162,6 +181,41 @@ interface CaptureDao {
 
     @Query("SELECT * FROM stack_record WHERE ownerId = :ownerId LIMIT 1")
     suspend fun stackOf(ownerId: Long): StackRecordEntity?
+
+    /**
+     * 删除单条 HTTP 记录关联的调用栈。
+     *
+     * 【为什么要显式删】
+     * stack_record 没有外键约束（Room 的 CASCADE 在这个场景收益不抵复杂度），
+     * 删 http_record 时必须手动清，否则堆栈越积越多、
+     * 而且会指向不存在的记录（表现为「孤儿堆栈」）。
+     */
+    @Query("DELETE FROM stack_record WHERE ownerId = :ownerId")
+    suspend fun deleteStackOf(ownerId: Long)
+
+    /** 批量删除一组 HTTP 记录关联的调用栈。 */
+    @Query("DELETE FROM stack_record WHERE ownerId IN (:ownerIds)")
+    suspend fun deleteStacksOf(ownerIds: List<Long>)
+
+    /** 删除整个会话下所有记录的调用栈（按 ownerId 归属）。 */
+    @Query(
+        """
+        DELETE FROM stack_record WHERE ownerId IN (
+            SELECT id FROM http_record WHERE sessionId IN (:sessionIds)
+        )
+        """
+    )
+    suspend fun deleteStacksBySessions(sessionIds: List<String>)
+
+    /** 清理孤儿堆栈：ownerId 指向的 http_record 已不存在。 */
+    @Query(
+        """
+        DELETE FROM stack_record WHERE ownerId NOT IN (
+            SELECT id FROM http_record
+        )
+        """
+    )
+    suspend fun deleteOrphanStacks(): Int
 
     // ---------- 清理 ----------
 
