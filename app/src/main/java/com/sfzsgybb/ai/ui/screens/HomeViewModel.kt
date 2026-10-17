@@ -91,6 +91,33 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 页面回到前台时重算会变的东西。
+     *
+     * 检测模块要在 root 里跑 su，很重；但 MCP 开关、应用数、数据量
+     * 是用户从别的页面回来就可能变了的。这里只刷轻量的部分，
+     * 避免每次切回首页都触发一次 su。
+     */
+    fun refreshLight() {
+        if (_state.value.loading) return
+        viewModelScope.launch {
+            val enabledApps = runCatching {
+                appList.listApps(onlyEnabled = true, query = null, limit = 1000).size
+            }.getOrDefault(_state.value.enabledApps)
+            val logCount = runCatching { logRepository.count(null) }.getOrDefault(_state.value.logCount)
+            val requestCount = runCatching { analysis.countTrafficAll("") }
+                .getOrDefault(_state.value.requestCount)
+
+            _state.value = _state.value.copy(
+                enabledApps = enabledApps,
+                mcpRunning = mcpServer.isRunning,
+                mcpPort = mcpServer.actualPort.takeIf { it > 0 } ?: _state.value.mcpPort,
+                logCount = logCount,
+                requestCount = requestCount,
+            )
+        }
+    }
+
     /** 显示激活帮助。 */
     fun showHelp() {
         _state.value = _state.value.copy(showActivationHelp = true)

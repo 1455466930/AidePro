@@ -19,11 +19,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -49,13 +53,17 @@ import com.sfzsgybb.ai.ui.components.MonoBlock
 import com.sfzsgybb.ai.ui.components.SectionHeader
 import com.sfzsgybb.ai.ui.components.StatCard
 import com.sfzsgybb.ai.ui.components.StatusDot
+import com.sfzsgybb.ai.ui.components.copyToClipboard
 import com.sfzsgybb.ai.ui.theme.CardCorner
 import com.sfzsgybb.ai.ui.theme.ScreenPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
+import com.sfzsgybb.ai.ui.components.cardOutline
 
 // ---------------- 设置 ----------------
 
@@ -157,6 +165,12 @@ fun McpConsoleScreen(
     Column(Modifier.fillMaxSize()) {
         AideTopBar(title = "MCP 服务", onBack = onBack)
 
+        // 自定义连接地址（用户手动改过的）。
+        // null 表示用自动算出来的地址；提到屏幕层级，
+        // 因为「客户端配置」那段 JSON 也要用同一个地址。
+        var customUrl by remember { mutableStateOf<String?>(null) }
+        val shownUrl = customUrl ?: state.activeUrl
+
         LazyColumn(
             contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -164,7 +178,7 @@ fun McpConsoleScreen(
             // ---------- 状态卡片 ----------
             item {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().cardOutline(),
                     shape = RoundedCornerShape(CardCorner),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(0.dp),
@@ -189,13 +203,47 @@ fun McpConsoleScreen(
                             }
                         }
 
+                        // 启停按钮互斥：运行中时「启动」必须禁用，
+                        // 否则用户点一下会先 stop 再 start，端口闪断一次，
+                        // 已经连上的 AI 客户端会掉线。
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { vm.startServer() }, modifier = Modifier.weight(1f)) {
-                                Text("启动")
+                            Button(
+                                onClick = { vm.startServer() },
+                                modifier = Modifier.weight(1f),
+                                enabled = !state.running && !state.busy,
+                            ) {
+                                if (state.busy && !state.running) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                    )
+                                    Text("  启动中…")
+                                } else {
+                                    Icon(Icons.Filled.PlayArrow, contentDescription = null,
+                                        modifier = Modifier.size(18.dp))
+                                    Text("  启动")
+                                }
                             }
-                            Button(onClick = { vm.stopServer() }, modifier = Modifier.weight(1f)) {
-                                Text("停止")
+                            OutlinedButton(
+                                onClick = { vm.stopServer() },
+                                modifier = Modifier.weight(1f),
+                                enabled = state.running && !state.busy,
+                            ) {
+                                Text(if (state.busy && state.running) "停止中…" else "停止")
                             }
+                        }
+
+                        // 启动失败要明确说出来。
+                        // 之前 runCatching 把异常吞了，用户点「启动」没反应，
+                        // 也不知道是端口被占、还是没权限。
+                        state.error?.let { err ->
+                            Text(
+                                err,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 11.sp,
+                            )
                         }
                     }
                 }
@@ -208,11 +256,14 @@ fun McpConsoleScreen(
 
             item {
                 var editing by remember { mutableStateOf(false) }
-                var draft by remember(state.activeUrl) { mutableStateOf(state.activeUrl) }
+                // draft 只在用户明确点「编辑」时初始化一次，
+                // 不能在 remember 的 key 里绑 state.activeUrl ——
+                // 那样后台一旦刷新状态，用户正在输入的内容就被冲掉。
+                var draft by remember { mutableStateOf("") }
 
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
-                        value = if (editing) draft else state.activeUrl,
+                        value = if (editing) draft else shownUrl,
                         onValueChange = { draft = it },
                         modifier = Modifier.fillMaxWidth(),
                         readOnly = !editing,
@@ -222,10 +273,11 @@ fun McpConsoleScreen(
                         trailingIcon = {
                             IconButton(onClick = {
                                 if (editing) {
-                                    // 保存：写回输入内容（下次同步时保留）
+                                    // 保存：写进 customUrl，这才是真正生效的那一步
+                                    customUrl = draft.trim().ifBlank { null }
                                     editing = false
                                 } else {
-                                    draft = state.activeUrl
+                                    draft = shownUrl
                                     editing = true
                                 }
                             }) {
@@ -237,14 +289,19 @@ fun McpConsoleScreen(
                         },
                     )
 
+                    if (customUrl != null) {
+                        Text(
+                            "已使用自定义地址；局域网开关变化不会再覆盖它",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                    }
+
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
                             onClick = {
-                                clipboard.setText(
-                                    androidx.compose.ui.text.AnnotatedString(
-                                        if (editing) draft else state.activeUrl
-                                    )
-                                )
+                                clipboard.setText(androidx.compose.ui.text.AnnotatedString(shownUrl))
                             },
                             modifier = Modifier.weight(1f),
                         ) {
@@ -254,10 +311,17 @@ fun McpConsoleScreen(
                         }
                         if (editing) {
                             OutlinedButton(
-                                onClick = { draft = state.activeUrl; editing = false },
+                                onClick = { editing = false },
                                 modifier = Modifier.weight(1f),
                             ) {
-                                Text("还原")
+                                Text("取消")
+                            }
+                        } else if (customUrl != null) {
+                            OutlinedButton(
+                                onClick = { customUrl = null },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text("恢复自动")
                             }
                         }
                     }
@@ -305,7 +369,7 @@ fun McpConsoleScreen(
                     append("{\n")
                     append("  \"mcpServers\": {\n")
                     append("    \"algorithm-aide-pro\": {\n")
-                    append("      \"url\": \"").append(state.activeUrl).append("\"\n")
+                    append("      \"url\": \"").append(shownUrl).append("\"\n")
                     append("    }\n")
                     append("  }\n")
                     append("}")
@@ -326,7 +390,7 @@ fun McpConsoleScreen(
 
             // ---------- 工具清单 ----------
             item { SectionHeader("可用工具（${state.tools.size}）") }
-            items(state.tools) { t ->
+            items(state.tools, key = { it.name }) { t ->
                 Column(
                     Modifier.fillMaxWidth().padding(vertical = 7.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -343,7 +407,7 @@ fun McpConsoleScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
             }
         }
     }
@@ -386,7 +450,7 @@ fun HookListScreen(
             LazyColumn(contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 32.dp)) {
                 items(state.rules, key = { it.id }) { rule ->
                     RuleRow(rule, onDelete = { vm.remove(rule.id) })
-                    Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
                 }
             }
         }
@@ -497,26 +561,91 @@ fun FridaEditorScreen(
     vm: FridaViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
+    val ctx = LocalContext.current
     LaunchedEffect(packageName) { vm.load(packageName) }
 
-    Column(Modifier.fillMaxSize()) {
-        AideTopBar(
-            title = "Frida 脚本",
-            onBack = onBack,
-            actions = { TextButton(onClick = { vm.save() }) { Text("保存") } },
-        )
-        Text(
-            text = packageName,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = ScreenPadding),
-        )
-        OutlinedTextField(
-            value = state.script,
-            onValueChange = vm::setScript,
-            modifier = Modifier.fillMaxSize().padding(ScreenPadding),
-            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            placeholder = { Text("Java.perform(function () {\n  // 在这里编写脚本\n});") },
+    // 保存结果反馈：之前 savedMessage 设了却没人显示，
+    // 用户点「保存」后完全不知道到底存没存上。
+    LaunchedEffect(state.savedMessage) {
+        state.savedMessage?.let {
+            snackbar.showSnackbar(it)
+            vm.clearMessage()
+        }
+    }
+
+    // 有未保存改动时提示，并且返回要确认，避免手滑丢掉脚本
+    val dirty = state.dirty
+    var confirmLeave by remember { mutableStateOf(false) }
+
+    // 【关键】系统返回键也要拦。
+    // 之前只在左上角箭头上判断 dirty，用户按返回键 / 手势返回时页面直接 pop，
+    // 脚本一字不留。只有 dirty 时才注册，正常返回不受影响。
+    androidx.activity.compose.BackHandler(enabled = dirty) { confirmLeave = true }
+
+    Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { pad ->
+        Column(Modifier.fillMaxSize().padding(pad)) {
+            AideTopBar(
+                title = if (dirty) "Frida 脚本 · 未保存" else "Frida 脚本",
+                // 有改动时先拦一下，给「保存并退出 / 放弃」的选择
+                onBack = { if (dirty) confirmLeave = true else onBack() },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            copyToClipboard(ctx, state.script)
+                        },
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "复制脚本")
+                    }
+                    TextButton(
+                        onClick = { vm.save() },
+                        enabled = dirty,
+                    ) { Text("保存") }
+                },
+            )
+            Text(
+                text = packageName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = ScreenPadding),
+            )
+            OutlinedTextField(
+                value = state.script,
+                onValueChange = vm::setScript,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = ScreenPadding, vertical = 8.dp),
+                // 12sp 太挤，脚本要能看清缩进；行高给足
+                textStyle = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp,
+                    lineHeight = 19.sp,
+                ),
+                placeholder = { Text("Java.perform(function () {\n    // 在这里编写脚本\n});") },
+            )
+        }
+    }
+
+    // 未保存时的离页确认
+    if (confirmLeave) {
+        AlertDialog(
+            onDismissRequest = { confirmLeave = false },
+            title = { Text("脚本还没保存") },
+            text = { Text("直接返回会丢掉这次的修改。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmLeave = false
+                    vm.save()
+                    onBack()
+                }) { Text("保存并返回") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    confirmLeave = false
+                    onBack()
+                }) { Text("放弃修改") }
+            },
         )
     }
 }
@@ -542,10 +671,10 @@ fun FridaLogScreen(
             EmptyState("暂无脚本日志", "脚本执行后输出会出现在这里")
         } else {
             LazyColumn(contentPadding = PaddingValues(ScreenPadding)) {
-                items(state.logs) { l ->
+                items(state.logs, key = { "${it.time}-${it.scriptName}-${it.message.hashCode()}" }) { l ->
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Text(
-                            "${formatTime(l.time)}  ${l.level}  ${l.scriptName}",
+                            "${formatTimeShort(l.time)}  ${l.level}  ${l.scriptName}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 11.sp,
@@ -560,6 +689,15 @@ fun FridaLogScreen(
 
 // ---------------- 关于 ----------------
 
+/**
+ * 关于页。
+ *
+ * 【反馈模式】
+ * 之前 feedbackOnly=true 只是换个标题，正文和关于页一字不差 ——
+ * 用户点「反馈」看到的还是版本号，等于没有反馈入口。
+ * 现在反馈模式改为：说明怎么反馈 + 一键复制诊断信息（系统版本、框架状态、
+ * 作用域、开关数量），这样提问题时不用自己一项项抄。
+ */
 @Composable
 fun AboutScreen(
     onBack: () -> Unit,
@@ -567,9 +705,15 @@ fun AboutScreen(
     vm: AboutViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+
+    if (feedbackOnly) {
+        FeedbackContent(state = state, clipboard = clipboard, onBack = onBack)
+        return
+    }
 
     Column(Modifier.fillMaxSize()) {
-        AideTopBar(title = if (feedbackOnly) "反馈" else "关于", onBack = onBack)
+        AideTopBar(title = "关于", onBack = onBack)
 
         LazyColumn(
             contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 32.dp),
@@ -577,7 +721,7 @@ fun AboutScreen(
         ) {
             item {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().cardOutline(),
                     shape = RoundedCornerShape(CardCorner),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(0.dp),
@@ -620,16 +764,7 @@ fun AboutScreen(
             state.module?.let { m ->
                 if (m.scopes.isNotEmpty()) {
                     item { InfoRow("Hook 作用域", "${m.scopes.size} 个应用") }
-                    item {
-                        Text(
-                            m.scopes.joinToString("\n"),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-                        )
-                    }
+                    item { ScopeList(m.scopes) }
                 }
             }
 
@@ -650,6 +785,47 @@ fun AboutScreen(
     }
 }
 
+/**
+ * Hook 作用域包名列表。
+ *
+ * 默认只显示前 8 个，其余折叠 —— 十个以上的包名一列铺开能占满整屏，
+ * 把下面的「能力统计」全挤到看不见的地方。
+ */
+@Composable
+private fun ScopeList(scopes: List<String>) {
+    var expanded by remember { mutableStateOf(false) }
+    val limit = 8
+    val showAll = expanded || scopes.size <= limit
+    val visible = if (showAll) scopes else scopes.take(limit)
+
+    Column(Modifier.padding(start = 4.dp, bottom = 4.dp)) {
+        visible.forEach { pkg ->
+            Text(
+                pkg,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 11.sp,
+            )
+        }
+        if (!showAll) {
+            Text(
+                "还有 ${scopes.size - limit} 个，展开",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { expanded = true }.padding(vertical = 6.dp),
+            )
+        } else if (scopes.size > limit) {
+            Text(
+                "收起",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { expanded = false }.padding(vertical = 6.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun InfoRow(k: String, v: String) {
     Row(
@@ -664,3 +840,101 @@ private fun InfoRow(k: String, v: String) {
         )
     }
 }
+
+/**
+ * 反馈页。
+ *
+ * 【为什么不再是「关于页换个标题」】
+ * 用户点「反馈」是想提问题，不是想看版本号。
+ * 这里给的是：怎么反馈、以及一键复制诊断信息 —— 
+ * 提问题时粘贴一段就够了，不用自己一项项报环境。
+ */
+@Composable
+private fun FeedbackContent(
+    state: AboutUiState,
+    clipboard: androidx.compose.ui.platform.ClipboardManager,
+    onBack: () -> Unit,
+) {
+    var copied by remember { mutableStateOf(false) }
+    LaunchedEffect(copied) {
+        if (copied) {
+            kotlinx.coroutines.delay(1500)
+            copied = false
+        }
+    }
+
+    val diag = buildString {
+        appendLine("【诊断信息】")
+        appendLine("版本：${state.versionName}(${state.versionCode})")
+        appendLine("系统：Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
+        appendLine("机型：${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+        appendLine("Root：${if (state.rooted) "已获取" else "未获取"}")
+        val m = state.module
+        appendLine(
+            "框架：" + when {
+                m == null -> "检测中"
+                m.active -> "${m.framework ?: "Xposed"} · 已启用"
+                else -> "${m.framework ?: "Xposed"} · ${m.state}"
+            },
+        )
+        appendLine("作用域：${m?.scopes?.size ?: 0} 个应用")
+        appendLine("MCP 工具：${state.toolCount} 个")
+    }
+
+    Column(Modifier.fillMaxSize()) {
+        AideTopBar(title = "反馈", onBack = onBack)
+
+        LazyColumn(
+            contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item { SectionHeader("怎么反馈") }
+            item {
+                Card(
+                    Modifier.fillMaxWidth().cardOutline(),
+                    shape = RoundedCornerShape(CardCorner),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(0.dp),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "提问题时请附上下面这段诊断信息，方便定位问题。",
+                            style = MaterialTheme.typography.bodySmall,
+                            lineHeight = 20.sp,
+                        )
+                        Text(
+                            "1. 点「复制诊断信息」\n" +
+                                "2. 到社区帖子里粘贴\n" +
+                                "3. 补充：目标应用名、你点了哪些开关、现象是什么",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 20.sp,
+                        )
+                    }
+                }
+            }
+
+            item { SectionHeader("诊断信息") }
+            item {
+                MonoBlock(diag)
+            }
+            item {
+                Button(
+                    onClick = {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(diag))
+                        copied = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        if (copied) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(if (copied) "  已复制" else "  复制诊断信息")
+                }
+            }
+        }
+    }
+}
+

@@ -360,9 +360,12 @@ class CaptureViewModel @Inject constructor(
             runCatching {
                 val selPkg = _state.value.selectedPackage
                 val src = _state.value.trafficSource
-                // 按选中包名过滤：选中了具体应用就只看它，null 看全部
+                // 按选中包名过滤：选中了具体应用就只看它，null 看全部。
+                // 【注意】选了应用时也必须带上来源过滤 ——
+                // 之前这里直接走 httpByPackage(pkg)，把 trafficSource 整个忽略了，
+                // 用户选了「Hook 抓包」再点某个应用，看到的却是两种来源混在一起的数据。
                 val raw = if (selPkg != null) {
-                    analysis.httpByPackage(selPkg, 300)
+                    analysis.httpByPackageAndSource(selPkg, src, 300)
                 } else {
                     // source="" 表示全部；hook / vpn 只取对应来源
                     analysis.recentHttpAll(300, src)
@@ -384,11 +387,35 @@ class CaptureViewModel @Inject constructor(
                         source = r.source,
                     )
                 }
-                _state.value = _state.value.copy(recentTraffic = items)
+                // 关键词过滤：域名 / 完整 URL 子串匹配，忽略大小写。
+                // 之前 trafficFilter 字段定义了、setTrafficFilter 也写了，
+                // 但 loadTraffic 从来没用它 —— 输入框就算加上也是摆设。
+                val filtered = filterTraffic(items, _state.value.trafficFilter)
+                // 同时留一份未过滤的原始结果，供打字时本地即时过滤
+                unfilteredTraffic = items
+                _state.value = _state.value.copy(recentTraffic = filtered)
             }.onFailure {
                 android.util.Log.w("CaptureViewModel", "加载流量失败: ${it.message}")
             }
         }
+    }
+
+    /** 最近一次取到的未经关键词过滤的流量，供 [applyTrafficFilterNow] 本地过滤。 */
+    private var unfilteredTraffic: List<TrafficItem> = emptyList()
+
+    private fun filterTraffic(items: List<TrafficItem>, keyword: String): List<TrafficItem> {
+        val kw = keyword.trim()
+        if (kw.isEmpty()) return items
+        return items.filter {
+            it.host.contains(kw, ignoreCase = true) || it.url.contains(kw, ignoreCase = true)
+        }
+    }
+
+    /** 关键词变化后立即重算，不等下一次轮询。 */
+    private fun applyTrafficFilterNow() {
+        _state.value = _state.value.copy(
+            recentTraffic = filterTraffic(unfilteredTraffic, _state.value.trafficFilter),
+        )
     }
 
     /** 加载按包名分组的数据 + 已启用 Hook 的应用列表。 */
@@ -440,7 +467,8 @@ class CaptureViewModel @Inject constructor(
     /** 设置流量过滤关键词。 */
     fun setTrafficFilter(q: String) {
         _state.value = _state.value.copy(trafficFilter = q)
-        loadTraffic()
+        // 本地过滤，不需要等下一次 2 秒轮询 —— 打字要即时出结果
+        applyTrafficFilterNow()
     }
 
     /** 启动流量自动刷新（抓包运行时每 2 秒刷一次）。 */
@@ -779,6 +807,23 @@ class HttpDetailViewModel @Inject constructor(
         val bytes = if (decoded.decoded) decoded.bytes else raw
         val text = repo.render(bytes, _state.value.mode)
         return if (decoded.truncated) "$text\n\n[内容已截断]" else text
+    }
+
+    /**
+     * 渲染成纯文本，给「复制整条请求」用。
+     *
+     * 与 [renderBody] 的区别是不看当前选中的 part / mode：
+     * 复制应该是把整条请求都带走，而不是只复制用户此刻在看的那一半。
+     */
+    fun renderBodyText(): String {
+        val r = _state.value.record ?: return ""
+        val dec = repo.decodeBody(
+            r.responseBody,
+            r.responseHeaders.firstOrNull { it.name.equals("Content-Encoding", true) }?.value,
+        )
+        val bytes = if (dec.decoded) dec.bytes else r.responseBody
+        val text = repo.render(bytes, ValueMode.TEXT)
+        return if (dec.truncated) "$text\n\n[内容已截断]" else text
     }
 }
 

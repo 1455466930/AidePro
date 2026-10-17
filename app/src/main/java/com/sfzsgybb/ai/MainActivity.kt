@@ -44,6 +44,8 @@ import com.sfzsgybb.ai.ui.screens.TcpDetailScreen
 import com.sfzsgybb.ai.ui.theme.AideProTheme
 import dagger.hilt.android.AndroidEntryPoint
 import com.sfzsgybb.ai.ui.screens.HomeScreen
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
 
 /**
  * 单 Activity + Compose Navigation。
@@ -77,6 +79,9 @@ private fun AideProRoot() {
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        // 让内容自动避开状态栏 / 导航栏 / 输入法。
+        // 之前各屏列表底部写死 40.dp，输入法弹出时搜索框会被顶掉。
+        contentWindowInsets = WindowInsets.safeDrawing,
         bottomBar = {
             if (isMainTab) {
                 NavigationBar {

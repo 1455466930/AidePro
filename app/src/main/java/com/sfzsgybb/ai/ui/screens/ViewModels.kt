@@ -2,6 +2,7 @@ package com.sfzsgybb.ai.ui.screens
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sfzsgybb.ai.data.model.LogGroup
 import com.sfzsgybb.ai.data.model.LogRecord
 import com.sfzsgybb.ai.di.DeviceAppListProvider
 import com.sfzsgybb.ai.hook.config.ConfigRepository
@@ -100,6 +101,8 @@ data class AppDetailUiState(
     val targetRunning: Boolean = false,
     val hasRoot: Boolean = false,
     val message: String? = null,
+    /** 强停/重启进行中：按钮要禁用，避免连点叠出两套 stop + launch */
+    val busy: Boolean = false,
 )
 
 @HiltViewModel
@@ -150,34 +153,58 @@ class AppDetailViewModel @Inject constructor(
 
     // ---------- 启动 / 重启 ----------
 
-    /** 仅启动目标应用。 */
+    /**
+     * 仅启动目标应用。
+     *
+     * forceStop 那一路有自己的 busy 标志，但「启动」和「强停并重启」
+     * 是两个按钮、同一个 busy，所以要一起判。
+     */
     fun launchApp() {
+        if (_state.value.busy) return
+        _state.value = _state.value.copy(busy = true)
         when (val r = AppLauncher.launch(appContext, _state.value.packageName)) {
             is AppLauncher.Result.Success ->
                 notify("已启动 ${_state.value.appLabel}，等几秒后到「日志」页查看")
             is AppLauncher.Result.Failed -> notify(r.reason)
         }
+        _state.value = _state.value.copy(busy = false)
+        refreshRunning()
     }
 
     /**
      * 强停并重启。
      * 这是配置改动后让 Hook 生效的标准操作：必须让目标应用重新走一遍
      * Application.onCreate，才会重新读取配置并安装模块。
+     *
+     * 【为什么要 busy】
+     * 整个流程是 forceStop → delay(800) → launch，中间有近一秒空档。
+     * 之前没有忙碌标志也不禁按钮，用户连点两次会并发跑两套，
+     * 第二次 launch 可能在第一次还没起来时就执行，目标应用起来两次或起不来。
+     * 流程很长，用户又会反复点 —— 这是很容易踩的坑。
      */
     fun restartApp() {
+        if (_state.value.busy) return
         val pkg = _state.value.packageName
+        _state.value = _state.value.copy(busy = true)
         viewModelScope.launch {
-            val stop = AppLauncher.forceStop(pkg)
-            if (stop is AppLauncher.Result.Failed) {
-                // 没有 root：引导用户去系统设置手动强停
-                notify("${stop.reason}（已为你打开设置页）")
-                AppLauncher.openAppSettings(appContext, pkg)
-                return@launch
-            }
-            kotlinx.coroutines.delay(800)
-            when (val r = AppLauncher.launch(appContext, pkg)) {
-                is AppLauncher.Result.Success -> notify("已重启 ${_state.value.appLabel}")
-                is AppLauncher.Result.Failed -> notify(r.reason)
+            try {
+                val stop = AppLauncher.forceStop(pkg)
+                if (stop is AppLauncher.Result.Failed) {
+                    // 没有 root：引导用户去系统设置手动强停
+                    notify("${stop.reason}（已为你打开设置页）")
+                    AppLauncher.openAppSettings(appContext, pkg)
+                    return@launch
+                }
+                kotlinx.coroutines.delay(800)
+                when (val r = AppLauncher.launch(appContext, pkg)) {
+                    is AppLauncher.Result.Success -> notify("已重启 ${_state.value.appLabel}")
+                    is AppLauncher.Result.Failed -> notify(r.reason)
+                }
+            } finally {
+                // 放 finally 里，中途取消/异常也要把按钮解禁，
+                // 否则按钮会永远卡在禁用状态
+                _state.value = _state.value.copy(busy = false)
+                refreshRunning()
             }
         }
     }
@@ -204,6 +231,9 @@ class AppDetailViewModel @Inject constructor(
 }
 
 /** 日志列表页状态。 */
+/** 搜索防抖时长：中文输入法组合期的连发输入合并成一次查询。 */
+private const val SEARCH_DEBOUNCE_MS = 250L
+
 data class LogListUiState(
     val loading: Boolean = true,
     val logs: List<LogRecord> = emptyList(),
@@ -216,6 +246,19 @@ data class LogListUiState(
     val appOptions: List<LogAppOption> = emptyList(),
     /** 应用列表页的搜索词（按软件名或包名过滤） */
     val appQuery: String = "",
+    /** 设置页「日志自动刷新」开关的实际值（来自 GlobalSwitch.LOG_AUTO_REFRESH） */
+    val autoRefreshEnabled: Boolean = true,
+    /**
+     * 当前应用日志里实际出现的分组及条数（group → count）。
+     *
+     * 【为什么不把 LogGroup.ALL 全部画出来】
+     * 之前筛选栏写死 `for (g in 0..5)`，结果：
+     *  1. 真正属于「默认」组的日志（group=0）没有对应标签，永远筛不出来；
+     *  2. 数据库 / SharedPreferences 两组（6、7）漏在外面，看不见；
+     *  3. 没有日志的分组也顶着个「0 条」的标签占地方。
+     * 现在按实际数据生成，没有日志的分组不出现。
+     */
+    val groupCounts: Map<Int, Int> = emptyMap(),
 ) {
     /** 按搜索词过滤后的应用列表。 */
     val filteredApps: List<LogAppOption>
@@ -257,12 +300,16 @@ class LogListViewModel @Inject constructor(
     /** 自动刷新任务。 */
     private var autoRefreshJob: Job? = null
 
+    /** 观察设置页开关的任务（开关在设置页改，日志页要实时跟随）。 */
+    private var autoRefreshWatchJob: Job? = null
+
     /** 包名 → 软件名 缓存，避免每次都查 PackageManager。 */
     private var labelCache: Map<String, String> = emptyMap()
 
     init {
         refresh()
         loadAppOptions()
+        watchAutoRefreshSetting()
     }
 
     /**
@@ -303,17 +350,40 @@ class LogListViewModel @Inject constructor(
      * 日志是持续产生的（Hook 实时上报），一次性加载会导致用户看不到新数据。
      * 这里用「只取比当前最新一条更新的记录」的方式增量拉取，
      * 避免全量重查（那会在日志量大时明显卡顿）。
+     *
+     * 受设置页「日志自动刷新」开关控制：关掉时这里直接不干活。
      */
     fun startAutoRefresh(intervalMs: Long = 2000L) {
+        if (!_state.value.autoRefreshEnabled) return
         if (autoRefreshJob?.isActive == true) return
         autoRefreshJob = viewModelScope.launch {
             while (isActive) {
                 delay(intervalMs)
-                // 搜索状态和分页加载中不打扰
+                // 搜索状态和分页加载中不打扰。
+                // loading 为真说明用户刚点了刷新/换了应用，正在查；
+                // 这时候再插一脚会和那次查询抢着写 state，两边结果互相覆盖。
                 if (_state.value.query.isNotBlank() || _state.value.loading) continue
-                runCatching { pullNewest() }
-                // 新应用产生日志后，筛选栏要能出现它
-                runCatching { loadAppOptions() }
+                val added = runCatching { pullNewest() }.getOrDefault(false)
+                // 新应用产生日志后，筛选栏要能出现它。
+                // 只在确实有新日志时才重查应用列表，没新数据时没必要每 2 秒扫一遍。
+                if (added) runCatching { loadAppOptions() }
+            }
+        }
+    }
+
+    /**
+     * 跟随设置页的「日志自动刷新」开关。
+     *
+     * 【为什么要观察而不是读一次】
+     * 设置页和日志页是两个页面，用户可能在日志页开着的时候去设置页把开关关掉。
+     * 读一次的话要杀掉页面才生效，用户会以为开关没作用。
+     */
+    private fun watchAutoRefreshSetting() {
+        autoRefreshWatchJob?.cancel()
+        autoRefreshWatchJob = viewModelScope.launch {
+            configRepository.observeGlobal(GlobalSwitch.LOG_AUTO_REFRESH).collect { on ->
+                _state.value = _state.value.copy(autoRefreshEnabled = on)
+                if (on) startAutoRefresh() else stopAutoRefresh()
             }
         }
     }
@@ -323,8 +393,19 @@ class LogListViewModel @Inject constructor(
         autoRefreshJob = null
     }
 
-    /** 拉取比当前列表更新的记录，插到最前面。 */
-    private suspend fun pullNewest() {
+    override fun onCleared() {
+        stopAutoRefresh()
+        autoRefreshWatchJob?.cancel()
+        super.onCleared()
+    }
+
+    /**
+     * 拉取比当前列表更新的记录，插到最前面。
+     *
+     * @return true 表示列表有变化（插入了新日志）。
+     *         调用方据此判断要不要随滚动，避免用户正在看中间被拽走。
+     */
+    private suspend fun pullNewest(): Boolean {
         val s = _state.value
         val newestTime = s.logs.firstOrNull()?.time ?: 0L
         val newestId = s.logs.firstOrNull()?.id ?: 0L
@@ -342,26 +423,33 @@ class LogListViewModel @Inject constructor(
             // 没有新数据，只更新总数
             val total = logRepository.count(s.packageFilter)
             if (total != s.total) _state.value = s.copy(total = total)
-            return
+            return false
         }
+
+        // 【并发保护】查库期间用户可能已经开始搜索了。
+        // 直接覆盖会把搜索结果冲掉，所以这里再确认一次状态没变。
+        if (_state.value.query.isNotBlank()) return false
 
         _state.value = s.copy(
             logs = fresh + s.logs,
             total = logRepository.count(s.packageFilter),
         )
-    }
-
-    override fun onCleared() {
-        stopAutoRefresh()
-        super.onCleared()
+        return true
     }
 
     fun refresh() {
+        val gen = ++loadGeneration
+        // 搜索中刷新：把搜索词清掉，重新走全量分页。
+        // 否则刷新出来的列表和搜索框里还留着的关键词对不上。
+        if (_state.value.query.isNotBlank()) {
+            searchJob?.cancel()
+            _state.value = _state.value.copy(query = "")
+        }
         viewModelScope.launch {
             cursorTime = Long.MAX_VALUE
             cursorId = Long.MAX_VALUE
             _state.value = _state.value.copy(loading = true)
-            loadPage(append = false)
+            loadPage(append = false, gen = gen)
         }
     }
 
@@ -371,7 +459,7 @@ class LogListViewModel @Inject constructor(
         viewModelScope.launch { loadPage(append = true) }
     }
 
-    private suspend fun loadPage(append: Boolean) {
+    private suspend fun loadPage(append: Boolean, gen: Int = 0) {
         val s = _state.value
         val rows = logRepository.page(
             packageName = s.packageFilter,
@@ -380,6 +468,11 @@ class LogListViewModel @Inject constructor(
             afterId = cursorId,
             limit = pageSize + 1,
         )
+        // 【并发保护】查库期间如果用户换了应用/分组或点了刷新，这一页已经作废。
+        // 不加判定的话，晚返回的旧查询会把新结果盖掉 ——
+        // 表现就是「点了刷新，列表闪一下又变回原来那批」。
+        if (gen != loadGeneration) return
+
         val page = rows.take(pageSize)
         if (page.isNotEmpty()) {
             cursorTime = page.last().time
@@ -391,15 +484,66 @@ class LogListViewModel @Inject constructor(
             hasMore = rows.size > pageSize,
             total = logRepository.count(s.packageFilter),
         )
+        // 只在换应用/首次加载时重算分组统计，翻页和自动刷新不重复查库
+        if (!append) refreshGroupCounts()
     }
 
+    /**
+     * 加载代次。
+     *
+     * 每次「开始一次全新加载」（刷新、换应用、换分组、进入搜索）就 +1，
+     * 用它淘汰还在路上的旧查询结果。见 [loadPage] 和 [search]。
+     */
+    private var loadGeneration = 0
+
+    /**
+     * 刷新分组计数（决定筛选栏上出现哪些分组标签）。
+     *
+     * 只统计当前应用范围内的日志；未选应用时统计全部。
+     */
+    private suspend fun refreshGroupCounts() {
+        runCatching {
+            val counts = logRepository
+                .groupCounts(_state.value.packageFilter)
+                .toMap()
+            _state.value = _state.value.copy(groupCounts = counts)
+            // 选中的分组如果已经没有日志了，自动回到「全部」，
+            // 否则用户会卡在一个空列表上不知道怎么回事
+            val sel = _state.value.groupFilter
+            if (sel >= 0 && counts[sel] == null) setGroup(LogGroup.ANY)
+        }.onFailure {
+            android.util.Log.w("LogListViewModel", "统计分组失败: ${it.message}")
+        }
+    }
+
+    /** 搜索防抖任务：输入法在组合期会连发多次，250ms 内的输入只查最后一次。 */
+    private var searchJob: Job? = null
+
+    /**
+     * 搜索日志。
+     *
+     * 【为什么要防抖】之前每次按键都直接打一次 DB，
+     * 中文输入法在拼音组合阶段会连发好几次（"s"→"sh"→"sha"→"shang"），
+     * 每次都查库既卡又浪费。现在 250ms 静默后才真正查询。
+     *
+     * 【为什么要占一代】搜索结果不是游标分页出来的，
+     * 如果这时自动刷新正好跑完 pullNewest()，它会把搜索结果整个覆盖掉，
+     * 用户会看到「搜到一半结果自己没了」。进入搜索就把代次推进，
+     * 让在路上的旧结果失效；搜索期间 pullNewest 也会被跳过（见 startAutoRefresh）。
+     */
     fun search(q: String) {
-        viewModelScope.launch {
-            _state.value = _state.value.copy(query = q, loading = true)
+        // 输入框内容立刻回显，查询延迟执行
+        val gen = ++loadGeneration
+        _state.value = _state.value.copy(query = q, loading = true)
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
             if (q.isBlank()) {
+                // 清空搜索：回到正常分页列表
                 refresh()
             } else {
                 val rows = logRepository.search(q, pageSize, 0)
+                if (gen != loadGeneration) return@launch
                 _state.value = _state.value.copy(
                     loading = false, logs = rows, hasMore = false,
                     total = logRepository.count(_state.value.packageFilter),
@@ -412,6 +556,7 @@ class LogListViewModel @Inject constructor(
         _state.value = _state.value.copy(groupFilter = g)
         refresh()
     }
+
 
     /** 按应用筛选：null = 全部。 */
     fun setPackage(pkg: String?) {

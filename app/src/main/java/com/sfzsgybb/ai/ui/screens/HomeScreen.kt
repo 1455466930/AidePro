@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -36,6 +37,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,8 +53,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sfzsgybb.ai.ui.components.AideTopBar
 import com.sfzsgybb.ai.ui.components.SectionHeader
 import com.sfzsgybb.ai.ui.theme.CardCorner
+import com.sfzsgybb.ai.ui.theme.Sem
 import com.sfzsgybb.ai.ui.theme.ScreenPadding
 import com.sfzsgybb.ai.util.ModuleStatusChecker
+import com.sfzsgybb.ai.ui.components.cardOutline
 
 /**
  * 社区入口链接。
@@ -62,15 +66,8 @@ import com.sfzsgybb.ai.util.ModuleStatusChecker
  */
 private const val COMMUNITY_URL = "https://docs.qq.com/doc/DUHZkb1hLWmhQQXN5"
 
-private val ActiveGreen = Color(0xFF2E7D32)
-private val ActiveGreenBg = Color(0xFF1B3A1D)
-private val InactiveRed = Color(0xFFC62828)
-private val InactiveRedBg = Color(0xFF3A1B1B)
-private val WarnAmber = Color(0xFFEF6C00)
-private val WarnAmberBg = Color(0xFF3A2E1B)
-/** 「状态无法确认」用的中性蓝：不吓唬用户，也不谎报成功。 */
-private val UnknownBlue = Color(0xFF1976D2)
-private val UnknownBlueBg = Color(0xFF16283A)
+// 颜色不再在这里硬编码：全部走 ui/theme/Semantic 令牌，
+// 深色/浅色模式自适应，也避免和别的页面配色打架。
 
 /**
  * 首页：模块状态总览。
@@ -86,19 +83,39 @@ fun HomeScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
 
+    // 从别的页面回来时刷新会变的部分（MCP 状态、应用数、数据量）。
+    // 不重跑 su —— 模块激没激活不会因为切了个页面就变。
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) vm.refreshLight()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Column(Modifier.fillMaxSize()) {
         AideTopBar(
             title = "算法助手公益版",
             actions = {
-                IconButton(onClick = { vm.refresh() }) {
-                    Icon(Icons.Filled.Refresh, "重新检测")
+                if (state.loading) {
+                    // 检测要跑 su，慢的时候一两秒。
+                    // 不给转圈的话用户会以为点了没反应，然后连点好几次。
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp).padding(end = 4.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    IconButton(onClick = { vm.refresh() }) {
+                        Icon(Icons.Filled.Refresh, "重新检测")
+                    }
                 }
             },
         )
 
         LazyColumn(
             contentPadding = PaddingValues(
-                start = ScreenPadding, end = ScreenPadding, top = 6.dp, bottom = 40.dp,
+                start = ScreenPadding, end = ScreenPadding, top = 6.dp, bottom = 12.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -116,7 +133,7 @@ fun HomeScreen(
             // ---------- 运行信息 ----------
             item {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().cardOutline(),
                     shape = RoundedCornerShape(CardCorner),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(0.dp),
@@ -150,7 +167,7 @@ fun HomeScreen(
 
             item {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().cardOutline(),
                     shape = RoundedCornerShape(CardCorner),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(0.dp),
@@ -228,22 +245,22 @@ private fun ModuleStatusCard(
             "点击重新检测",
         )
         status.active -> Quad(
-            ActiveGreenBg, ActiveGreen, Icons.Filled.CheckCircle,
+            Sem.successContainer, Sem.success, Icons.Filled.CheckCircle,
             "模块已启用", status.summary,
         )
         status.state == ModuleStatusChecker.State.NO_FRAMEWORK -> Quad(
-            InactiveRedBg, InactiveRed, Icons.Filled.ErrorOutline,
+            Sem.dangerContainer, Sem.danger, Icons.Filled.ErrorOutline,
             "模块未激活", "未检测到 Xposed 框架，点此查看安装步骤",
         )
         // 【重要】查不到 ≠ 没激活。
         // 检测受限（没 root / 框架路径不同）时不能吓唬用户说「未生效」，
         // 用中性提示 + 说明功能可能是好的。
         status.state == ModuleStatusChecker.State.UNKNOWN -> Quad(
-            UnknownBlueBg, UnknownBlue, Icons.Filled.HelpOutline,
+            Sem.infoContainer, Sem.info, Icons.Filled.HelpOutline,
             "状态无法确认", status.summary + "，点此查看说明",
         )
         else -> Quad(
-            WarnAmberBg, WarnAmber, Icons.Filled.Warning,
+            Sem.warningContainer, Sem.warning, Icons.Filled.Warning,
             "模块未生效", status.summary + "，点此查看激活步骤",
         )
     }

@@ -74,6 +74,10 @@ class AnalysisRepository(private val dao: AnalysisDao) {
     suspend fun httpByPackage(pkg: String, limit: Int): List<HttpRecord> =
         dao.httpByPackage(pkg, limit).map { it.toModel() }
 
+    /** 取指定包名 + 指定来源的最近记录（source 为空表示不限来源）。 */
+    suspend fun httpByPackageAndSource(pkg: String, source: String, limit: Int): List<HttpRecord> =
+        dao.httpByPackageAndSource(pkg, source, limit).map { it.toModel() }
+
     /** 最近所有记录（跨包名）。source 为空表示不过滤来源。 */
     suspend fun recentHttpAll(limit: Int, source: String = ""): List<HttpRecord> =
         dao.recentHttpAll(limit, source).map { it.toModel() }

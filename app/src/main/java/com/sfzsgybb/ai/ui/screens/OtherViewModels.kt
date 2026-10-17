@@ -80,6 +80,10 @@ data class McpConsoleUiState(
     val localUrl: String = "",
     val connections: Int = 0,
     val requests: Long = 0,
+    /** 启停进行中：按钮要禁用并转圈，否则连点会反复 stop/start */
+    val busy: Boolean = false,
+    /** 上一次启停失败的原始原因 */
+    val error: String? = null,
 ) {
     /** 当前实际要用的连接地址（局域网优先）。 */
     val activeUrl: String get() = if (lanEnabled && !lanUrl.isNullOrBlank()) lanUrl else localUrl
@@ -117,25 +121,38 @@ class McpConsoleViewModel @Inject constructor(
     }
 
     fun startServer() {
+        if (_state.value.busy) return
+        _state.value = _state.value.copy(busy = true, error = null)
         viewModelScope.launch(Dispatchers.IO) {
+            var failure: String? = null
             runCatching { configRepository.setGlobal(GlobalSwitch.MCP_HTTP_ENABLED, true) }
             // 同步绑定策略：配置里的局域网开关可能与 server 单例里的旧 config 不一致
             val lan = configRepository.getGlobal(GlobalSwitch.MCP_LAN_ENABLED)
             mcpServer.config = mcpServer.config.copy(bindLocalhostOnly = !lan)
             runCatching { mcpServer.stop() }
-            runCatching { mcpServer.start() }
+            runCatching { mcpServer.start() }.onFailure {
+                failure = "启动失败：${it.message ?: it.javaClass.simpleName}"
+            }
             if (configRepository.getGlobal(GlobalSwitch.MCP_KEEP_ALIVE)) {
                 runCatching { com.sfzsgybb.ai.mcp.McpKeepAliveService.start(appContext) }
             }
+            // start() 内部吞异常时 isRunning 仍是 false，这里再兜一次
+            if (failure == null && !mcpServer.isRunning) {
+                failure = "启动失败：端口 ${mcpServer.actualPort.takeIf { it > 0 } ?: McpConstants.DEFAULT_PORT} 可能已被占用"
+            }
+            _state.value = _state.value.copy(busy = false, error = failure)
             syncState()
         }
     }
 
     fun stopServer() {
+        if (_state.value.busy) return
+        _state.value = _state.value.copy(busy = true, error = null)
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { mcpServer.stop() }
             runCatching { com.sfzsgybb.ai.mcp.McpKeepAliveService.stop(appContext) }
             runCatching { configRepository.setGlobal(GlobalSwitch.MCP_HTTP_ENABLED, false) }
+            _state.value = _state.value.copy(busy = false)
             syncState()
         }
     }
@@ -175,7 +192,6 @@ class McpConsoleViewModel @Inject constructor(
         )
     }
 }
-
 data class HookListUiState(
     val packageName: String = "",
     val rules: List<HookRule> = emptyList(),
@@ -215,7 +231,14 @@ data class FridaUiState(
     val packageName: String = "",
     val script: String = FridaViewModel.DEFAULT_SCRIPT,
     val savedMessage: String? = null,
-)
+    /** 脚本已从磁盘读出来（用于区分「还没加载完」和「用户清空了」） */
+    val loaded: Boolean = false,
+    /** 磁盘上当前的版本，用来判断是否有未保存改动 */
+    val savedScript: String = FridaViewModel.DEFAULT_SCRIPT,
+) {
+    /** 有未保存改动。 */
+    val dirty: Boolean get() = loaded && script != savedScript
+}
 
 @HiltViewModel
 class FridaViewModel @Inject constructor(
@@ -227,10 +250,17 @@ class FridaViewModel @Inject constructor(
 
     fun load(pkg: String) {
         viewModelScope.launch {
-            val dir = scriptDir(pkg)
-            val f = File(dir, "main.js")
-            val content = if (f.exists()) runCatching { f.readText() }.getOrDefault(DEFAULT_SCRIPT) else DEFAULT_SCRIPT
-            _state.value = FridaUiState(packageName = pkg, script = content)
+            val content = withContext(Dispatchers.IO) {
+                val f = File(scriptDir(pkg), "main.js")
+                if (f.exists()) runCatching { f.readText() }.getOrDefault(DEFAULT_SCRIPT)
+                else DEFAULT_SCRIPT
+            }
+            _state.value = FridaUiState(
+                packageName = pkg,
+                script = content,
+                savedScript = content,
+                loaded = true,
+            )
         }
     }
 
@@ -239,14 +269,19 @@ class FridaViewModel @Inject constructor(
     }
 
     fun save() {
+        val s = _state.value
         viewModelScope.launch(Dispatchers.IO) {
             val ok = runCatching {
-                val dir = scriptDir(_state.value.packageName)
+                val dir = scriptDir(s.packageName)
                 if (!dir.exists()) dir.mkdirs()
-                File(dir, "main.js").writeText(_state.value.script)
+                File(dir, "main.js").writeText(s.script)
                 true
             }.getOrDefault(false)
-            _state.value = _state.value.copy(savedMessage = if (ok) "已保存" else "保存失败")
+            _state.value = _state.value.copy(
+                savedMessage = if (ok) "已保存" else "保存失败：写不进应用私有目录",
+                // 存成功后把基准更新掉，标题的「未保存」才会消失
+                savedScript = if (ok) s.script else _state.value.savedScript,
+            )
         }
     }
 
@@ -258,18 +293,34 @@ class FridaViewModel @Inject constructor(
         File(com.sfzsgybb.ai.AideProApp.get().filesDir, "frida/$pkg")
 
     companion object {
+        /**
+         * 新脚本的初始模板。
+         *
+         * 【注意缩进】
+         * trimIndent() 只去掉所有行共同的最少缩进。
+         * 之前整个模板写在 trimIndent 块里但内容本身从第 0 列开始，
+         * 结果首行缩进 0、其余行缩进 16，粘出来是一段畸形脚本。
+         * 现在统一从第 0 列写，靠 trimIndent 只负责去掉整体缩进。
+         */
         val DEFAULT_SCRIPT = """
-            Java.perform(function () {
-                // 在这里编写 Frida 脚本
-                // 例：打印所有 Cipher 调用
-                // var Cipher = Java.use('javax.crypto.Cipher');
-                // Cipher.doFinal.overload('[B').implementation = function (input) {
-                //     var out = this.doFinal(input);
-                //     console.log('doFinal ->', bytesToHex(out));
-                //     return out;
-                // };
-            });
-        """.trimIndent()
+Java.perform(function () {
+    // 在这里编写 Frida 脚本，保存后由目标应用进程执行
+    //
+    // 示例：打印所有 AES 加解密结果
+    // var Cipher = Java.use('javax.crypto.Cipher');
+    // Cipher.doFinal.overload('[B').implementation = function (input) {
+    //     var out = this.doFinal(input);
+    //     console.log('Cipher.doFinal ->', bytesToHex(out));
+    //     return out;
+    // };
+    //
+    // 常用速查：
+    //   Java.available                    是否可 hook Java 层
+    //   Java.use('完整类名')               获取类包装
+    //   X.overload('签名').implementation   替换方法实现
+    //   Java.perform(函数)                 在目标类加载后执行
+});
+""".trimIndent().trimEnd('\n') + "\n"
     }
 }
 

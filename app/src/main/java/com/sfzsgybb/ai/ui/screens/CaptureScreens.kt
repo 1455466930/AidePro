@@ -1,4 +1,4 @@
-package com.sfzsgybb.ai.ui.screens
+﻿package com.sfzsgybb.ai.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MoreVert
@@ -27,10 +30,11 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -57,6 +61,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -66,12 +71,14 @@ import com.sfzsgybb.ai.data.model.CaptureSession
 import com.sfzsgybb.ai.data.model.ValueMode
 import com.sfzsgybb.ai.ui.components.AideTopBar
 import com.sfzsgybb.ai.ui.components.Chip
+import com.sfzsgybb.ai.ui.components.CopyableMonoBlock
 import com.sfzsgybb.ai.ui.components.EmptyState
 import com.sfzsgybb.ai.ui.components.KeyValueRow
 import com.sfzsgybb.ai.ui.components.MonoBlock
 import com.sfzsgybb.ai.ui.components.SectionHeader
 import com.sfzsgybb.ai.ui.components.StatCard
 import com.sfzsgybb.ai.ui.components.StatusDot
+import com.sfzsgybb.ai.ui.components.copyToClipboard
 import com.sfzsgybb.ai.ui.theme.CardCorner
 import com.sfzsgybb.ai.ui.theme.ScreenPadding
 import com.sfzsgybb.ai.ui.theme.statusColor
@@ -82,6 +89,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
+import com.sfzsgybb.ai.ui.theme.Sem
+import com.sfzsgybb.ai.ui.components.cardOutline
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableIntStateOf
+import kotlinx.coroutines.launch
 
 // ==================== 抓包主页 ====================
 
@@ -96,6 +112,13 @@ fun CaptureScreen(
     val snackbar = remember { SnackbarHostState() }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClearAll by remember { mutableStateOf(false) }
+
+    // 多选模式下，返回键先退出多选，而不是直接离开抓包页。
+    // 之前只能靠右上角菜单里的「多选删除」再点一次切回来，
+    // 误进多选后用户的第一反应就是按返回。
+    androidx.activity.compose.BackHandler(enabled = state.selectionMode) {
+        vm.toggleSelectionMode()
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -147,14 +170,45 @@ fun CaptureScreen(
                 },
             )
 
+            // ---------- 跟随尾部滚动 ----------
+            // 抓包时新数据不断进来。用户停在底部时自动滚到最新一条；
+            // 一旦手动上滑就暂停跟随，并显示「有新 N 条 ↓」气泡，点击跳回底部。
+            val listState = rememberLazyListState()
+            val scope = rememberCoroutineScope()
+
+            // 用户是否停在底部（留 2 行容差，避免像素级抖动）
+            val atBottom by remember {
+                derivedStateOf {
+                    val info = listState.layoutInfo
+                    val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+                    info.totalItemsCount == 0 || last >= info.totalItemsCount - 2
+                }
+            }
+            var following by remember { mutableStateOf(true) }
+            LaunchedEffect(atBottom) {
+                // 手动滚回底部就恢复跟随
+                if (atBottom) following = true
+            }
+
+            val count = state.recentTraffic.size
+            var lastCount by remember { mutableIntStateOf(count) }
+            LaunchedEffect(count, following) {
+                if (following && count > lastCount && count > 0) {
+                    listState.animateScrollToItem((count - 1).coerceAtLeast(0))
+                }
+                lastCount = count
+            }
+
+            Box(Modifier.fillMaxSize()) {
             LazyColumn(
-                contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 40.dp),
+                state = listState,
+                contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // ---------- 状态卡片 ----------
                 item {
                     Card(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().cardOutline(),
                         shape = RoundedCornerShape(CardCorner),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         elevation = CardDefaults.cardElevation(0.dp),
@@ -220,7 +274,7 @@ fun CaptureScreen(
                 item {
                     val ctx = LocalContext.current
                     Card(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().cardOutline(),
                         shape = RoundedCornerShape(CardCorner),
                         colors = CardDefaults.cardColors(
                             containerColor = if (state.vpnRunning)
@@ -446,29 +500,52 @@ fun CaptureScreen(
                 }
 
                 // ---------- 目标应用选择 ----------
-                item {
-                    SectionHeader("抓取目标应用")
-                }
+                // 已启用的应用全塞一行横向滚动里会滑不完，这里改成可换行的流式布局；
+                // 选中的应用挪到最前面（见 CaptureViewModel 的排序），
+                // 用户切完来源一眼就能看到自己选的是谁。
+                if (state.enabledApps.isNotEmpty()) {
+                    item { SectionHeader("抓取目标应用（${state.enabledApps.size}）") }
 
-                item {
-                    // 横向滚动的应用筛选：全部 + 每个已启用 Hook 的应用
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        FilterChip(
-                            selected = state.selectedPackage == null,
-                            onClick = { vm.selectPackage(null) },
-                            label = { Text("全部", fontSize = 12.sp) },
-                        )
-                        state.enabledApps.forEach { (pkg, label) ->
+                    item {
+                        var expanded by remember { mutableStateOf(false) }
+                        val limit = 6
+                        val ordered = state.enabledApps.sortedByDescending {
+                            it.first == state.selectedPackage
+                        }
+                        val showAll = expanded || ordered.size <= limit
+                        val visible = if (showAll) ordered else ordered.take(limit)
+
+                        @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
                             FilterChip(
-                                selected = state.selectedPackage == pkg,
-                                onClick = { vm.selectPackage(pkg) },
-                                label = { Text(label, fontSize = 12.sp) },
+                                selected = state.selectedPackage == null,
+                                onClick = { vm.selectPackage(null) },
+                                label = { Text("全部应用", fontSize = 12.sp) },
                             )
+                            visible.forEach { (pkg, label) ->
+                                FilterChip(
+                                    selected = state.selectedPackage == pkg,
+                                    onClick = { vm.selectPackage(pkg) },
+                                    label = {
+                                        Text(
+                                            label,
+                                            fontSize = 12.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    },
+                                )
+                            }
+                            if (!showAll) {
+                                AssistChip(
+                                    onClick = { expanded = true },
+                                    label = { Text("还有 ${ordered.size - limit} 个", fontSize = 12.sp) },
+                                )
+                            }
                         }
                     }
                 }
@@ -480,26 +557,94 @@ fun CaptureScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        SectionHeader("抓到的请求（${state.recentTraffic.size}）")
-                        IconButton(onClick = { vm.loadTraffic() }) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "刷新", modifier = Modifier.size(20.dp))
+                        SectionHeader("抓到的请求")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${state.recentTraffic.size} 条",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                            )
+                            IconButton(onClick = { vm.loadTraffic() }) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "刷新", modifier = Modifier.size(20.dp))
+                            }
                         }
+                    }
+                }
+
+                // 搜索框：一次抓到 300 条，靠肉眼翻找是不可用的。
+                // CaptureViewModel.setTrafficFilter 早就有，之前一直没接到界面上。
+                if (state.recentTraffic.isNotEmpty() || state.trafficFilter.isNotBlank()) {
+                    item {
+                        OutlinedTextField(
+                            value = state.trafficFilter,
+                            onValueChange = vm::setTrafficFilter,
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text("搜索域名 / 路径", fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                            trailingIcon = {
+                                if (state.trafficFilter.isNotEmpty()) {
+                                    IconButton(onClick = { vm.setTrafficFilter("") }) {
+                                        Icon(Icons.Filled.Clear, contentDescription = "清空")
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(10.dp),
+                        )
                     }
                 }
 
                 if (state.recentTraffic.isEmpty()) {
                     item {
                         EmptyState(
-                            "还没有抓到数据",
-                            if (state.vpnRunning) "VPN 已启动，去操作目标应用即可看到请求"
-                            else "先启动代理抓包，再去操作目标应用",
+                            if (state.trafficFilter.isNotBlank()) "没有匹配的请求" else "还没有抓到数据",
+                            when {
+                                state.trafficFilter.isNotBlank() -> "换个关键词，或清空搜索框"
+                                state.vpnRunning -> "代理已启动，去操作目标应用即可看到请求"
+                                state.running -> "Hook 已就绪，重启目标应用后操作几下"
+                                else -> "先启动上面的抓包，再去操作目标应用"
+                            },
                         )
                     }
                 } else {
                     items(state.recentTraffic, key = { it.id }) { item ->
-                        TrafficRow(item = item, onClick = { onOpenHttp(item.id) })
+                        // animateItem：新请求从尾部进来时平滑插入，
+                        // 不加的话每 2 秒自动刷新整屏闪跳一次
+                        Column(Modifier.animateItem()) {
+                            TrafficRow(item = item, onClick = { onOpenHttp(item.id) })
+                        }
                     }
                 }
+            }
+
+            // 暂停跟随时显示「有新数据 ↓」气泡：点一下跳回最新
+            if (!following && count > 0) {
+                SmallFloatingActionButton(
+                    onClick = {
+                        following = true
+                        scope.launch { listState.animateScrollToItem(count - 1) }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 16.dp),
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("回到底部", fontSize = 12.sp)
+                        Icon(
+                            Icons.Filled.ArrowDownward,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
             }
         }
     }
@@ -571,7 +716,7 @@ private fun SessionCard(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        formatTime(session.startedAt),
+                        formatTimeShort(session.startedAt),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp,
@@ -633,6 +778,11 @@ fun SessionDetailScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var confirmClear by remember { mutableStateOf(false) }
+
+    // 同上：多选态下返回键先退多选
+    androidx.activity.compose.BackHandler(enabled = state.selectionMode) {
+        vm.toggleSelectionMode()
+    }
 
     LaunchedEffect(sessionId) { vm.load(sessionId) }
     LaunchedEffect(state.message) {
@@ -714,7 +864,7 @@ fun SessionDetailScreen(
                 )
             } else {
                 LazyColumn(
-                    contentPadding = PaddingValues(top = 6.dp, bottom = 40.dp),
+                    contentPadding = PaddingValues(top = 6.dp, bottom = 12.dp),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(state.items, key = { "${it.kind}-${it.id}" }) { item ->
@@ -728,7 +878,7 @@ fun SessionDetailScreen(
                             },
                             onDelete = { vm.deleteRecord(item) },
                         )
-                        Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
                     }
                 }
             }
@@ -796,7 +946,7 @@ private fun NetworkRow(
                 )
             }
             Text(
-                formatTime(item.time),
+                formatTimeShort(item.time),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
@@ -827,17 +977,46 @@ fun HttpDetailScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(recordId) { vm.load(recordId) }
 
-    Column(Modifier.fillMaxSize()) {
-        AideTopBar(title = "请求详情", onBack = onBack)
+    val r = state.record
+    val ctx = LocalContext.current
 
-        val r = state.record
+    Column(Modifier.fillMaxSize()) {
+        AideTopBar(
+            title = "请求详情",
+            onBack = onBack,
+            actions = {
+                // 整条请求一键复制：抓包分析时最常用的动作
+                if (r != null) {
+                    IconButton(onClick = {
+                        copyToClipboard(
+                            ctx,
+                            buildString {
+                                append("${r.method} ${r.url} HTTP/${r.httpVersion}\n")
+                                r.requestHeaders.forEach { append("${it.name}: ${it.value}\n") }
+                                append("\n--- 响应 ${r.statusCode} ${r.statusText} ---\n")
+                                r.responseHeaders.forEach { append("${it.name}: ${it.value}\n") }
+                                append("\n").append(vm.renderBodyText())
+                            },
+                        )
+                    }) {
+                        Icon(Icons.Filled.ContentCopy, contentDescription = "复制整条请求")
+                    }
+                }
+            },
+        )
+
         if (r == null) {
             EmptyState(if (state.loading) "加载中…" else "记录不存在")
             return
         }
 
+        // 两行筛选：上行 请求/响应，下行 渲染模式。
+        // 合成一行在窄屏上会挤到换行错位。
         Row(
-            modifier = Modifier.padding(horizontal = ScreenPadding, vertical = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = ScreenPadding, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             FilterChip(
@@ -850,6 +1029,7 @@ fun HttpDetailScreen(
                 onClick = { vm.setPart("response") },
                 label = { Text("响应", fontSize = 12.sp) },
             )
+            Spacer(Modifier.width(6.dp))
             ValueMode.entries.forEach { m ->
                 FilterChip(
                     selected = state.mode == m,
@@ -860,12 +1040,12 @@ fun HttpDetailScreen(
         }
 
         LazyColumn(
-            contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 40.dp),
+            contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             item {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().cardOutline(),
                     shape = RoundedCornerShape(CardCorner),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(0.dp),
@@ -892,12 +1072,34 @@ fun HttpDetailScreen(
 
             val headers = if (state.part == "request") r.requestHeaders else r.responseHeaders
             if (headers.isNotEmpty()) {
-                item { SectionHeader(if (state.part == "request") "请求头" else "响应头") }
-                items(headers.size) { i -> KeyValueRow(headers[i].name, headers[i].value) }
+                item { SectionHeader("${if (state.part == "request") "请求头" else "响应头"}（${headers.size}）") }
+                items(headers.size, key = { i -> "hdr-$i-${headers[i].name}" }) { i ->
+                        KeyValueRow(headers[i].name, headers[i].value)
+                    }
+                // 头部整体复制：一键贴给他人或搜关键词，不用一行行划
+                item {
+                    Text(
+                        "复制全部头部",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clickable {
+                                copyToClipboard(
+                                    ctx,
+                                    headers.joinToString("\n") { "${it.name}: ${it.value}" },
+                                )
+                            }
+                            .padding(vertical = 6.dp),
+                    )
+                }
             }
 
-            item { SectionHeader("正文") }
-            item { MonoBlock(vm.renderBody().ifBlank { "(空)" }, maxLines = 400) }
+            item {
+                CopyableMonoBlock(
+                    text = vm.renderBody().ifBlank { "(空)" },
+                    label = "正文",
+                )
+            }
         }
     }
 }
@@ -913,10 +1115,12 @@ fun TcpDetailScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(recordId) { vm.load(recordId) }
 
+    val p = state.packet
+    val ctx = LocalContext.current
+
     Column(Modifier.fillMaxSize()) {
         AideTopBar(title = "报文详情", onBack = onBack)
 
-        val p = state.packet
         if (p == null) {
             EmptyState(if (state.loading) "加载中…" else "报文不存在")
             return
@@ -936,12 +1140,12 @@ fun TcpDetailScreen(
         }
 
         LazyColumn(
-            contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 40.dp),
+            contentPadding = PaddingValues(start = ScreenPadding, end = ScreenPadding, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             item {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().cardOutline(),
                     shape = RoundedCornerShape(CardCorner),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(0.dp),
@@ -958,10 +1162,14 @@ fun TcpDetailScreen(
                                 Chip(p.wsFrameType, MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
+                        // 远端地址常用来搜「连到哪个服务器」，必须能复制
                         Text(
                             "${p.remoteAddress}:${p.remotePort}",
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.clickable {
+                                copyToClipboard(ctx, "${p.remoteAddress}:${p.remotePort}")
+                            },
                         )
                         Text(
                             "${p.size} B · ${formatTime(p.time)}",
@@ -973,12 +1181,21 @@ fun TcpDetailScreen(
             }
 
             if (p.stackTrace.isNotBlank()) {
-                item { SectionHeader("调用栈") }
-                item { MonoBlock(p.stackTrace, maxLines = 60) }
+                item {
+                    CopyableMonoBlock(
+                        text = p.stackTrace,
+                        label = "调用栈",
+                        collapsedHeight = 200.dp,
+                    )
+                }
             }
 
-            item { SectionHeader("载荷") }
-            item { MonoBlock(vm.render().ifBlank { "(空)" }, maxLines = 800) }
+            item {
+                CopyableMonoBlock(
+                    text = vm.render().ifBlank { "(空)" },
+                    label = "载荷",
+                )
+            }
         }
     }
 }
@@ -994,6 +1211,11 @@ fun CaptureHistoryScreen(
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var confirmClearAll by remember { mutableStateOf(false) }
+
+    // 同上：多选态下返回键先退多选
+    androidx.activity.compose.BackHandler(enabled = state.selectionMode) {
+        vm.toggleSelectionMode()
+    }
 
     LaunchedEffect(Unit) { vm.refresh() }
     LaunchedEffect(state.message) {
@@ -1078,7 +1300,7 @@ fun TrafficRow(item: TrafficItem, onClick: () -> Unit = {}) {
     Card(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 3.dp)
+            .padding(vertical = 3.dp)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(CardCorner),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1164,23 +1386,22 @@ fun TrafficRow(item: TrafficItem, onClick: () -> Unit = {}) {
     }
 }
 
-/** 按方法着色。 */
-private fun methodColor(m: String) = when (m.uppercase()) {
-    "GET" -> Color(0xFF2E7D32)
-    "POST" -> Color(0xFF1565C0)
-    "PUT", "PATCH" -> Color(0xFFEF6C00)
-    "DELETE" -> Color(0xFFC62828)
-    else -> Color(0xFF616161)
+/**
+ * 按 HTTP 方法着色。
+ *
+ * 从语义令牌取色：GET 成功绿、POST 信息蓝、PUT/PATCH 警告橙、DELETE 危险红。
+ * 之前这里硬编码了一套十六进制色，和 DetailScreen 的 statusColor 互相矛盾
+ * （比如 5xx 一个说红一个说紫），现在统一口径。
+ */
+@Composable
+private fun methodColor(m: String): Color = when (m.uppercase()) {
+    "GET" -> Sem.success
+    "POST" -> Sem.info
+    "PUT", "PATCH" -> Sem.warning
+    "DELETE" -> Sem.danger
+    else -> Sem.neutral
 }
 
-/** 按状态码着色。 */
-private fun statusColor(code: Int) = when {
-    code in 200..299 -> Color(0xFF2E7D32)
-    code in 300..399 -> Color(0xFFEF6C00)
-    code in 400..499 -> Color(0xFFC62828)
-    code >= 500 -> Color(0xFF6A1B9A)
-    else -> Color(0xFF616161)
-}
 
 /** 人类可读的大小。 */
 private fun fmtSize(bytes: Long): String = when {

@@ -164,6 +164,32 @@ interface AnalysisDao {
     )
     suspend fun httpByPackage(pkg: String, limit: Int): List<HttpRecordSummaryEntity>
 
+    /**
+     * 指定包名 + 指定来源的最近记录。
+     *
+     * 【为什么要在 SQL 里过滤 source，而不是取回来在内存里筛】
+     * 先按包名取 300 条再筛来源，遇到「这个应用 300 条都是 hook 抓的」
+     * 这种情况，用户选了「代理抓包」会看到空列表 —— 明明有数据，只是不在前 300 条里。
+     * 过滤下推到 SQL，limit 才有意义。
+     */
+    @Query(
+        """
+        SELECT id, sessionId, source, packageName, protocol, method, url, host, path,
+               httpVersion, statusCode, statusText, requestHeaders, responseHeaders,
+               requestBodyTruncated, responseBodyTruncated,
+               requestSize, responseSize, durationMs, time, mimeType
+        FROM http_record
+        WHERE packageName = :pkg
+          AND (:source = '' OR source = :source)
+        ORDER BY id DESC LIMIT :limit
+        """
+    )
+    suspend fun httpByPackageAndSource(
+        pkg: String,
+        source: String = "",
+        limit: Int,
+    ): List<HttpRecordSummaryEntity>
+
     /** 最近抓到的所有 HTTP 记录（跨包名，抓包页「全部」视图）。 */
     @Query(
         """

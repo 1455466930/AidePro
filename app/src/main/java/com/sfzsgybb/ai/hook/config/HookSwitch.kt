@@ -71,17 +71,19 @@ enum class HookSwitch(
     WEB_VIEW_LOAD_URL("webViewLoadUrlSwitch", "WebView 加载", "Hook WebView.loadUrl / loadDataWithBaseURL", LogGroup.NETWORK),
 
     // ---- SQLite ----
-    SQLITE_OPEN("sqliteOpenSwitch", "数据库打开", "Hook SQLiteDatabase.openOrCreateDatabase", LogGroup.STORAGE),
-    SQLITE_INSERT("sqliteInsertSwitch", "数据库插入", "Hook insert / insertOrThrow / insertWithOnConflict", LogGroup.STORAGE),
-    SQLITE_DELETE("sqliteDeleteSwitch", "数据库删除", "Hook delete", LogGroup.STORAGE),
-    SQLITE_UPDATE("sqliteUpdateSwitch", "数据库更新", "Hook update", LogGroup.STORAGE),
-    SQLITE_QUERY("sqliteQuerySwitch", "数据库查询", "Hook rawQuery / query", LogGroup.STORAGE),
-    SQLITE_EXEC_SQL("sqliteExecSQLSwitch", "执行原始 SQL", "Hook execSQL", LogGroup.STORAGE),
+    // 数据库和 SharedPreferences 单独成组：共 9 个开关，
+    // 若塞进 STORAGE 会把存储组撑到 22 个，日志页也分不出「读文件」和「跑 SQL」。
+    SQLITE_OPEN("sqliteOpenSwitch", "数据库打开", "Hook SQLiteDatabase.openOrCreateDatabase", LogGroup.DATABASE),
+    SQLITE_INSERT("sqliteInsertSwitch", "数据库插入", "Hook insert / insertOrThrow / insertWithOnConflict", LogGroup.DATABASE),
+    SQLITE_DELETE("sqliteDeleteSwitch", "数据库删除", "Hook delete", LogGroup.DATABASE),
+    SQLITE_UPDATE("sqliteUpdateSwitch", "数据库更新", "Hook update", LogGroup.DATABASE),
+    SQLITE_QUERY("sqliteQuerySwitch", "数据库查询", "Hook rawQuery / query", LogGroup.DATABASE),
+    SQLITE_EXEC_SQL("sqliteExecSQLSwitch", "执行原始 SQL", "Hook execSQL", LogGroup.DATABASE),
 
     // ---- SharedPreferences ----
-    SP_OPEN("getSharedPreferencesSwitch", "SP 打开", "Hook Context.getSharedPreferences", LogGroup.STORAGE),
-    SP_GET("SharedPreferencesGetSwitch", "SP 读取", "Hook SharedPreferences.getXxx", LogGroup.STORAGE),
-    SP_PUT("SharedPreferencesPutSwitch", "SP 写入", "Hook Editor.putXxx / commit / apply", LogGroup.STORAGE),
+    SP_OPEN("getSharedPreferencesSwitch", "SP 打开", "Hook Context.getSharedPreferences", LogGroup.PREFS),
+    SP_GET("SharedPreferencesGetSwitch", "SP 读取", "Hook SharedPreferences.getXxx", LogGroup.PREFS),
+    SP_PUT("SharedPreferencesPutSwitch", "SP 写入", "Hook Editor.putXxx / commit / apply", LogGroup.PREFS),
 
     // ---- 媒体 / 系统 ----
     CAMERA("cameraHookSwitch", "相机调用", "Hook Camera / Camera2 打开", LogGroup.SYSTEM),
