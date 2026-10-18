@@ -150,7 +150,13 @@ class McpConsoleViewModel @Inject constructor(
         _state.value = _state.value.copy(busy = true, error = null)
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { mcpServer.stop() }
-            runCatching { com.sfzsgybb.ai.mcp.McpKeepAliveService.stop(appContext) }
+            // 【保活独立】关 MCP 不等于关保活。
+            // 之前这里无条件 stopService，用户只是想暂停 MCP，
+            // 结果进程也失去保护，下次 AI 连不上。
+            // 只有保活开关本身是关闭状态才停。
+            if (!configRepository.getGlobal(GlobalSwitch.MCP_KEEP_ALIVE)) {
+                runCatching { com.sfzsgybb.ai.mcp.McpKeepAliveService.stop(appContext) }
+            }
             runCatching { configRepository.setGlobal(GlobalSwitch.MCP_HTTP_ENABLED, false) }
             _state.value = _state.value.copy(busy = false)
             syncState()
@@ -174,7 +180,9 @@ class McpConsoleViewModel @Inject constructor(
     fun setKeepAlive(enabled: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             configRepository.setGlobal(GlobalSwitch.MCP_KEEP_ALIVE, enabled)
-            if (enabled && mcpServer.isRunning) {
+            // 保活不依赖 MCP 是否在跑：开着就该保持进程存活，
+            // 这样 AI 随时能连上，不用先把 APP 唤回前台。
+            if (enabled) {
                 runCatching { com.sfzsgybb.ai.mcp.McpKeepAliveService.start(appContext) }
             } else {
                 runCatching { com.sfzsgybb.ai.mcp.McpKeepAliveService.stop(appContext) }

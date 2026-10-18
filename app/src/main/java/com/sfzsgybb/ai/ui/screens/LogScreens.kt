@@ -1,4 +1,4 @@
-﻿package com.sfzsgybb.ai.ui.screens
+package com.sfzsgybb.ai.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -94,9 +94,23 @@ import com.sfzsgybb.ai.ui.components.cardOutline
 @Composable
 fun LogListScreen(
     onOpenLog: (Long) -> Unit,
+    /**
+     * 初始要展示的应用包名。
+     *
+     * 从抓包页的「查看日志」图标跳过来时带上，直接进该应用的日志列表，
+     * 不用再在应用卡片里找一遍。传 null 表示显示应用卡片列表。
+     */
+    initialPackage: String? = null,
     vm: LogListViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+
+    // 带着包名进来时，直接切到该应用的日志列表（只做一次，避免覆盖用户手动返回）
+    LaunchedEffect(initialPackage) {
+        if (!initialPackage.isNullOrBlank() && state.packageFilter != initialPackage) {
+            vm.setPackageFilter(initialPackage)
+        }
+    }
 
     // 进入页面时开启自动刷新，离开时停止，避免后台空转
     DisposableEffect(Unit) {

@@ -20,7 +20,21 @@ sealed class Dest(val route: String, val title: String) {
     // 主区（底部导航）
     data object Home : Dest("home", "首页")
     data object Apps : Dest("apps", "应用")
-    data object Logs : Dest("logs", "日志")
+    data object Logs : Dest("logs", "日志") {
+        /**
+         * 带应用过滤的日志页路由。
+         *
+         * 用**可选查询参数**而不是新增路由：Logs 是底部导航主区，
+         * 改 route 会让底栏高亮匹配失效。`logs?pkg=xxx` 解析时
+         * route 仍算 `logs`，底栏照常亮。
+         *
+         * 从抓包页的「查看日志」图标跳转用这个。
+         */
+        fun withPackage(pkg: String?): String =
+            if (pkg.isNullOrBlank()) route else "$route?pkg=${android.net.Uri.encode(pkg)}"
+
+        const val PKG_QUERY = "pkg"
+    }
     data object Capture : Dest("capture", "抓包")
     data object Settings : Dest("settings", "设置")
 
@@ -32,6 +46,16 @@ sealed class Dest(val route: String, val title: String) {
         fun of(id: Long) = "log/$id"
     }
     data object CaptureHistory : Dest("capture/history", "抓包历史")
+
+    /**
+     * 抓到的请求列表（钻进某一种抓包后）。
+     *
+     * mode = hook / vpn，决定看哪类数据、顶部停止按钮关哪个。
+     */
+    data object CaptureTraffic : Dest("capture/traffic/{mode}", "抓到的请求") {
+        const val MODE_ARG = "mode"
+        fun of(mode: String) = "capture/traffic/$mode"
+    }
     data object SessionDetail : Dest("capture/session/{sessionId}", "会话详情") {
         fun of(id: String) = "capture/session/$id"
     }

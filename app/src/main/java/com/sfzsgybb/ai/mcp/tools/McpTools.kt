@@ -364,6 +364,12 @@ class CaptureDeleteSessionsTool(private val repo: CaptureRepository) : McpToolHa
 }
 
 class NetworkListTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String =
+        "当前没有抓包会话。先调用 vpn_capture 或 mitm_proxy 启动代理抓包，或到应用页启用 Hook。"
+
     override val name = "network_list"
     override val description = "列出 HTTP / TCP / WebSocket 混合流量。返回 nextAfterId 供翻页，请勿自行构造。"
     override val paginated = true
@@ -415,6 +421,12 @@ class NetworkListTool(private val repo: CaptureRepository) : McpToolHandler {
 }
 
 class HttpInfoTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String =
+        "当前没有抓包会话。"
+
     override val name = "http_info"
     override val description = "获取 HTTP 请求/响应的元数据：方法、URL、状态码、全部请求与响应头。"
 
@@ -453,6 +465,12 @@ class HttpInfoTool(private val repo: CaptureRepository) : McpToolHandler {
 }
 
 class HttpBodyTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String =
+        "当前没有抓包会话。"
+
     override val name = "http_body"
     override val description = "分块读取 HTTP 请求或响应体。用 part 指定 request/response，用 offset+limit 分块。"
 
@@ -501,6 +519,12 @@ class HttpBodyTool(private val repo: CaptureRepository) : McpToolHandler {
 }
 
 class NetworkPacketBodyTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String =
+        "当前没有抓包会话。"
+
     override val name = "network_packetBody"
     override val description = "读取 TCP / WebSocket 报文的载荷，用 recordId 定位。"
 
@@ -570,6 +594,12 @@ class NetworkPacketBodyTool(private val repo: CaptureRepository) : McpToolHandle
 }
 
 class NetworkStacksTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String =
+        "当前没有抓包会话。调用栈只会随 HTTP 记录一起产生。"
+
     override val name = "network_stacks"
     override val description = "获取指定流量记录的发起方调用栈，用于定位代码位置。"
 
@@ -662,6 +692,12 @@ class NetworkInfoTool(private val repo: CaptureRepository) : McpToolHandler {
 }
 
 class NetworkPacketsTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String =
+        "当前没有抓包会话。先启动代理抓包（vpn_capture）或启用 Hook 抓包。"
+
     override val name = "network_packets"
     override val description =
         "列出某会话下的网络记录序列（按时间升序），用于还原连接会话。" +

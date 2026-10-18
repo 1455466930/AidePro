@@ -315,6 +315,12 @@ class RemoveRewriteRuleTool : McpToolHandler {
 // ==================== 重放 ====================
 
 class ReplayRequestTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，无法重放。"
+
     override val name = "replay_request"
     override val description =
         "重放已捕获的 HTTP 请求。可在重放时覆盖请求头或请求体做改包测试，" +

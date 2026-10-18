@@ -217,6 +217,39 @@ interface CaptureDao {
     )
     suspend fun deleteOrphanStacks(): Int
 
+    // ---------- 一键删除流量（保留会话） ----------
+
+    /** 全部 HTTP 记录 id（删前先按 ownerId 清堆栈用）。 */
+    @Query("SELECT id FROM http_record")
+    suspend fun allHttpIds(): List<Long>
+
+    /** 指定应用的所有 HTTP 记录 id。 */
+    @Query("SELECT id FROM http_record WHERE packageName = :packageName")
+    suspend fun httpIdsByPackage(packageName: String): List<Long>
+
+    /** 删除指定应用的全部 HTTP 记录。 */
+    @Query("DELETE FROM http_record WHERE packageName = :packageName")
+    suspend fun deleteHttpByPackage(packageName: String)
+
+    /**
+     * 删除指定应用会话下的报文记录。
+     *
+     * packet_data 表没有 packageName 列（报文归属靠 sessionId），
+     * 所以通过「该包名的会话」间接定位。
+     */
+    @Query(
+        """
+        DELETE FROM packet_data WHERE sessionId IN (
+            SELECT sessionId FROM capture_session WHERE packageName = :packageName
+        )
+        """
+    )
+    suspend fun deletePacketsByPackage(packageName: String)
+
+    /** 把所有会话的记录数清零（会话本身保留，便于继续抓）。 */
+    @Query("UPDATE capture_session SET recordCount = 0")
+    suspend fun resetAllRecordCounts()
+
     // ---------- 清理 ----------
 
     @Query("DELETE FROM http_record WHERE sessionId IN (:ids)")

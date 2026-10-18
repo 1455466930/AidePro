@@ -28,6 +28,12 @@ class GetRequestListTool(
     private val analysis: AnalysisRepository,
     private val capture: CaptureRepository,
 ) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求。先启动抓包并操作目标应用。"
+
     override val name = "get_request_list"
     override val description =
         "获取抓包请求列表。返回请求摘要（方法、URL、状态码、耗时等），" +
@@ -83,6 +89,12 @@ class GetRequestListTool(
 }
 
 class GetRequestDetailTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求。先启动抓包并操作目标应用。"
+
     override val name = "get_request_detail"
     override val description =
         "获取某个请求的完整详情：请求头、请求体、响应头、响应体、耗时等。需要 requestId。"
@@ -142,6 +154,12 @@ class GetRequestDetailTool(private val analysis: AnalysisRepository) : McpToolHa
 }
 
 class GetRequestBodyTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求。先启动抓包并操作目标应用。"
+
     override val name = "get_request_body"
     override val description = "单独获取某个请求的请求体或响应体完整内容，适合查看大体积内容。"
 
@@ -182,6 +200,12 @@ class GetRequestBodyTool(private val analysis: AnalysisRepository) : McpToolHand
 }
 
 class SearchRequestsTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求。先启动抓包并操作目标应用。"
+
     override val name = "search_requests"
     override val description =
         "高级搜索抓包请求。支持 URL 关键词、请求/响应体内容、Header 关键词、时间范围组合搜索。"
@@ -242,6 +266,12 @@ class SearchRequestsTool(private val analysis: AnalysisRepository) : McpToolHand
 // ==================== 统计 ====================
 
 class GetRequestStatsTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求。先启动抓包并操作目标应用。"
+
     override val name = "get_request_stats"
     override val description =
         "获取抓包统计摘要：总请求数、域名分布、状态码分布、方法分布、平均耗时等分析数据。"
@@ -278,6 +308,12 @@ class GetRequestStatsTool(private val analysis: AnalysisRepository) : McpToolHan
 }
 
 class GetDomainSummaryTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求。先启动抓包并操作目标应用。"
+
     override val name = "get_domain_summary"
     override val description =
         "按域名分组汇总：请求数、接口路径列表（去重）、方法分布、Content-Type 分布、平均耗时。"

@@ -9,6 +9,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.add
+import com.sfzsgybb.ai.frida.FridaBinaryManager
 
 /**
  * Frida 脚本注入工具。
@@ -17,6 +18,12 @@ import kotlinx.serialization.json.add
  * console.log 输出写入日志文件，frida_get_log 读取。
  */
 class FridaInjectTool(private val engine: FridaEngine) : McpToolHandler {
+
+    // 【按需暴露】frida-inject 没就绪时注入必然失败，先让用户装
+    override fun availability(): Boolean = FridaBinaryManager.existingUsable() != null
+
+    override fun unavailableHint(): String =
+        "frida-inject 未安装。先调用 frida_install 安装（arm64 从内置资源释放，无需联网）。"
     override val name = "frida_inject_script"
     override val description =
         "向目标应用注入 Frida JS 脚本并执行（需 root + 设备有 frida-inject）。" +
@@ -48,6 +55,11 @@ class FridaInjectTool(private val engine: FridaEngine) : McpToolHandler {
 
 /** Frida 注入状态工具。 */
 class FridaStatusTool(private val engine: FridaEngine) : McpToolHandler {
+
+    override fun availability(): Boolean = FridaBinaryManager.existingUsable() != null
+
+    override fun unavailableHint(): String =
+        "frida-inject 未安装，还没有可查询的注入状态。先调用 frida_install。"
     override val name = "frida_status"
     override val description = "查看当前 Frida 脚本注入状态。"
 
@@ -68,6 +80,10 @@ class FridaStatusTool(private val engine: FridaEngine) : McpToolHandler {
 
 /** Frida 停止注入工具。 */
 class FridaStopTool(private val engine: FridaEngine) : McpToolHandler {
+
+    override fun availability(): Boolean = FridaBinaryManager.existingUsable() != null
+
+    override fun unavailableHint(): String = "没有正在运行的 Frida 注入（frida-inject 未安装）。"
     override val name = "frida_stop_script"
     override val description = "停止某个应用（或全部）的 Frida 脚本注入。"
 

@@ -58,8 +58,13 @@ class AideProApp : Application() {
                 runCatching { mcpServer.start() }
                     .onFailure { Log.w(TAG, "MCP 服务启动失败", it) }
             }
-            // 前台服务保活：避免长时间空闲被系统回收导致 AI 客户端断连
-            if (enabled && keepAlive) {
+
+            // 【保活独立于 MCP 开关】
+            // 之前是 `enabled && keepAlive` —— MCP 没开时保活不启动，
+            // 用户开了保活却没效果。现在只要保活开关是 true 就启动：
+            //  - 保持进程存活，随时能让 AI 连上（不用等 APP 回到前台）
+            //  - MCP 中途被打开时，服务已在跑，不必再抢救一次
+            if (keepAlive) {
                 runCatching { com.sfzsgybb.ai.mcp.McpKeepAliveService.start(this@AideProApp) }
                     .onFailure { Log.w(TAG, "MCP 保活服务启动失败", it) }
             }

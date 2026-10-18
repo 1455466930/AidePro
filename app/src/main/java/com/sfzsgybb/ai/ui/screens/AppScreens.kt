@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -73,6 +74,7 @@ import com.sfzsgybb.ai.ui.theme.ScreenPadding
 import com.sfzsgybb.ai.ui.theme.Sem
 import com.sfzsgybb.ai.ui.components.cardOutline
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.Spacer
 
 /** 分组标题映射，避免中文散落在多处。顺序即界面展示顺序。 */
 private val GROUP_TITLES = linkedMapOf(
@@ -272,6 +274,8 @@ fun AppDetailScreen(
     onOpenHooks: () -> Unit,
     onOpenFrida: () -> Unit,
     onOpenFridaLog: () -> Unit,
+    /** 跳到该应用的日志列表（启动/重启卡片右上角的图标）。 */
+    onOpenLogs: () -> Unit = {},
     vm: AppDetailViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -322,14 +326,17 @@ fun AppDetailScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text("启用 Hook", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "关闭后该应用不加载任何模块",
+                                // 说明自动行为，避免用户以为 HTTP 抓包开关自己乱跳
+                                if (state.enabled) "已自动开启 HTTP 抓包；SSL 证书信任需按需手动开"
+                                else "关闭后该应用不加载任何模块",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        Spacer(Modifier.size(12.dp))
                         Switch(checked = state.enabled, onCheckedChange = vm::setAppEnabled)
                     }
                 }
@@ -368,6 +375,20 @@ fun AppDetailScreen(
                                     "改动开关后需重启目标应用才会生效",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // 跳到该应用的日志列表：启动前确认开关是否生效、
+                            // 启动后看 Hook 抓到了什么，都在这一个日志页里。
+                            //
+                            // 【图标选择】之前用 List（三条线），容易被当成
+                            // 「切换视图」或「排序」。换成 Description ——
+                            // 文件形状 + 文字行，一眼就是「文字记录 / 日志」。
+                            IconButton(onClick = onOpenLogs) {
+                                Icon(
+                                    Icons.Filled.Description,
+                                    contentDescription = "查看日志",
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
                                 )
                             }
                             IconButton(onClick = { vm.refreshRunning() }) {

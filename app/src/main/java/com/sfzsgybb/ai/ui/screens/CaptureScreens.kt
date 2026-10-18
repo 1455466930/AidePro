@@ -1,4 +1,4 @@
-﻿package com.sfzsgybb.ai.ui.screens
+package com.sfzsgybb.ai.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -98,6 +98,9 @@ import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableIntStateOf
 import kotlinx.coroutines.launch
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material3.FilledTonalIconButton
 
 // ==================== 抓包主页 ====================
 
@@ -112,6 +115,9 @@ fun CaptureScreen(
     val snackbar = remember { SnackbarHostState() }
     var menuOpen by remember { mutableStateOf(false) }
     var confirmClearAll by remember { mutableStateOf(false) }
+    // 搜索框旁「一键删除」的确认框：只删流量不删会话，
+    // 但一次几百条也值得确认一下
+    var confirmClearTraffic by remember { mutableStateOf(false) }
 
     // 多选模式下，返回键先退出多选，而不是直接离开抓包页。
     // 之前只能靠右上角菜单里的「多选删除」再点一次切回来，
@@ -576,22 +582,40 @@ fun CaptureScreen(
                 // CaptureViewModel.setTrafficFilter 早就有，之前一直没接到界面上。
                 if (state.recentTraffic.isNotEmpty() || state.trafficFilter.isNotBlank()) {
                     item {
-                        OutlinedTextField(
-                            value = state.trafficFilter,
-                            onValueChange = vm::setTrafficFilter,
-                            modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text("搜索域名 / 路径", fontSize = 13.sp) },
-                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                            trailingIcon = {
-                                if (state.trafficFilter.isNotEmpty()) {
-                                    IconButton(onClick = { vm.setTrafficFilter("") }) {
-                                        Icon(Icons.Filled.Clear, contentDescription = "清空")
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            OutlinedTextField(
+                                value = state.trafficFilter,
+                                onValueChange = vm::setTrafficFilter,
+                                modifier = Modifier.weight(1f),
+                                placeholder = { Text("搜索域名 / 路径", fontSize = 13.sp) },
+                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                                trailingIcon = {
+                                    if (state.trafficFilter.isNotEmpty()) {
+                                        IconButton(onClick = { vm.setTrafficFilter("") }) {
+                                            Icon(Icons.Filled.Clear, contentDescription = "清空搜索")
+                                        }
                                     }
-                                }
-                            },
-                            singleLine = true,
-                            shape = RoundedCornerShape(10.dp),
-                        )
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(10.dp),
+                            )
+                            // 一键删除：清掉已抓到的请求（保留会话，抓包中也能清）
+                            FilledTonalIconButton(
+                                onClick = { confirmClearTraffic = true },
+                                modifier = Modifier.size(52.dp),
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.DeleteSweep,
+                                    contentDescription = "一键删除请求",
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -660,6 +684,29 @@ fun CaptureScreen(
                 }
             },
             dismissButton = { TextButton(onClick = { confirmClearAll = false }) { Text("取消") } },
+        )
+    }
+
+    // 一键删除请求（保留会话，抓包中也能清）
+    if (confirmClearTraffic) {
+        AlertDialog(
+            onDismissRequest = { confirmClearTraffic = false },
+            title = { Text("删除已抓到的请求？") },
+            text = {
+                Text(
+                    if (state.selectedPackage != null) {
+                        "将删除「${state.selectedPackage}」的 ${state.recentTraffic.size} 条请求记录。会话会保留，抓包仍在继续。"
+                    } else {
+                        "将删除全部 ${state.recentTraffic.size} 条请求记录。会话会保留，抓包仍在继续。"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmClearTraffic = false; vm.clearTraffic() }) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmClearTraffic = false }) { Text("取消") } },
         )
     }
 }

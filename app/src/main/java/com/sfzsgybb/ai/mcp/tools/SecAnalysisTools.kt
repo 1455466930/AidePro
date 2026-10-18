@@ -24,6 +24,12 @@ import kotlinx.serialization.json.putJsonObject
  */
 
 class GetCookieInfoTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，拿不到 Cookie。"
+
     override val name = "get_cookie_info"
     override val description =
         "提取并分析指定域名的 Cookie。从请求头与响应头提取 Cookie/Set-Cookie，" +
@@ -63,6 +69,12 @@ class GetCookieInfoTool(private val analysis: AnalysisRepository) : McpToolHandl
 }
 
 class CompareRequestsTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，无法对比。"
+
     override val name = "compare_requests"
     override val description =
         "对比两个请求的差异：URL、Header、Query 参数、请求体的不同之处。"
@@ -105,6 +117,12 @@ class CompareRequestsTool(private val analysis: AnalysisRepository) : McpToolHan
 }
 
 class AnalyzeEncryptedContentTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，无内容可分析。"
+
     override val name = "analyze_encrypted_content"
     override val description =
         "分析疑似加密/编码的内容。自动检测 Base64/Hex/URL 编码并尝试解码，" +
@@ -174,6 +192,12 @@ class AnalyzeEncryptedContentTool(private val analysis: AnalysisRepository) : Mc
 }
 
 class FindSensitiveDataTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，无内容可扫描。"
+
     override val name = "find_sensitive_data"
     override val description =
         "扫描抓包数据中的敏感信息：手机号、身份证、邮箱、JWT、Bearer Token、" +
@@ -217,6 +241,12 @@ class FindSensitiveDataTool(private val analysis: AnalysisRepository) : McpToolH
 }
 
 class AnalyzeAuthTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，无鉴权信息可分析。"
+
     override val name = "analyze_auth"
     override val description =
         "提取并分析认证信息：Authorization 头、Bearer Token、API Key、" +
@@ -258,6 +288,12 @@ class AnalyzeAuthTool(private val analysis: AnalysisRepository) : McpToolHandler
 }
 
 class ExtractApiEndpointsTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，提取不到端点。"
+
     override val name = "extract_api_endpoints"
     override val description =
         "提取并归组 API 端点。把路径中的 ID、UUID、哈希等动态片段替换成占位符，" +
@@ -297,6 +333,12 @@ class ExtractApiEndpointsTool(private val analysis: AnalysisRepository) : McpToo
 }
 
 class GenerateCodeTool(private val analysis: AnalysisRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具是空的，隐藏以减少工具数量
+    override fun availability(): Boolean = analysis.hasAnyRecord()
+
+    override fun unavailableHint(): String =
+        "当前没有抓到的请求，无法生成代码。"
+
     override val name = "generate_code"
     override val description =
         "根据抓包请求生成可执行代码片段。支持 python（requests）、javascript（fetch）、curl、go。"

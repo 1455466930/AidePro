@@ -181,5 +181,9 @@ object McpConstants {
 1. 抓包类工具需先调 capture_status 确认状态，再用 capture_sessions 获取真实 sessionId。
 2. 分页时把上一次返回的 nextAfterId / nextOffset 原样传回，不要自行构造。
 3. HTTP 详情用 http_info / http_body（按 id + part），TCP/WebSocket 载荷用 recordId。
-4. 所有 id 必须来自前一次工具调用的返回，不要臆造。"""
+4. 所有 id 必须来自前一次工具调用的返回，不要臆造。
+5. 【按需暴露】查询类工具（network_* / http_* / get_request_* / analyze_*）
+   只在有抓包数据时才出现在工具列表里。如果找不到它们，
+   说明还没开始抓包 —— 先调 vpn_capture 或 mitm_proxy 启动，
+   或让用户在应用页启用 Hook，然后重新拉取工具列表。"""
 }

@@ -1,8 +1,8 @@
 # 算法助手公益版
 
-Android 逆向分析工具：**Xposed 加密算法日志** + **双通道抓包** + **MCP 服务**。
+Android 逆向分析工具：**加密算法日志** + **双通道抓包** + **MCP 服务**（让 AI 直接读数据）。
 
-不需要电脑、不需要插数据线，手机上直接看加密调用的明文、密钥和调用堆栈；抓包覆盖 Java 层和原生层；内置 MCP 服务，让 AI 客户端直接读数据做分析。
+不需要电脑和数据线，手机上直接看加密调用的明文、密钥与调用堆栈；抓包覆盖 Java 层与原生层。
 
 > 仅用于自有设备上的应用调试与协议分析。
 
@@ -14,261 +14,130 @@ Android 逆向分析工具：**Xposed 加密算法日志** + **双通道抓包**
 
 ### 加密算法日志
 
-Hook 标准加密类，拿到业务真正用的参数，而不是一堆裸字节：
+Hook `MessageDigest` / `Mac` / `Cipher`，记录算法名、密钥（区分公私钥）、明文密文、调用堆栈。
 
-| Hook 目标 | 能拿到 |
-|---|---|
-| `MessageDigest` | 算法名、输入明文、摘要结果 |
-| `Mac` | 算法名、**密钥**、待计算数据、MAC 结果 |
-| `Cipher` | transformation、**密钥（区分公钥/私钥）**、IV/GCM 参数、明文、密文、加密还是解密 |
-
-每条日志带**调用堆栈**（自动过滤系统帧和反射帧），直接定位到业务代码哪一行调的。
-
-详情页按字段分类展示，密钥/内容/结果各自独立切换 `text` / `hex` / `base64`，一键复制或整条导出。
+详情页字段分类展示，支持 text / hex / base64 切换与长按选中复制。
 
 ### 双通道抓包
 
-**Hook 抓包** —— 在目标进程内拦 OkHttp / HttpURLConnection / WebView：
+| 方式 | 原理 | 适用 |
+|---|---|---|
+| **Hook 抓包** | Java 层拦截 OkHttp / HttpURLConnection / WebView | 明文直取，无需证书，兼容 R8 混淆 |
+| **代理抓包** | VPN 路由层接管 + MITM 解密 | 覆盖 Flutter / Cronet / 自研网络栈 |
 
-- 拿的是**明文，不需要装证书**
-- 加密参数（`sign`、`token`）能看到原始值
-- 兼容 R8 混淆的 OkHttp（动态探测类名和方法签名）
-
-**代理抓包** —— 路由层接管，覆盖 Hook 抓不到的应用：
-
-- Cronet、Flutter、自研网络栈、原生代码
-- 按应用归属：反查连接 uid 得到包名，数据自动分组，不用在一堆请求里翻
-- 默认只接管「应用」页里勾选的 App，可选全局
+两种互斥，开一个自动关另一个（避免同一请求被记两遍）。数据入库时标记来源，各看各的。
 
 ### MCP 服务
 
-51 个工具通过 MCP 协议暴露，AI 客户端连上后可以直接：
+56 个工具，让 AI 客户端直接读日志、分析抓包、断点改包、注入 Frida 脚本。
 
-- 读日志、查加密调用、看调用堆栈
-- 分析抓包数据、提取 API 端点、找敏感信息、分析鉴权逻辑
-- 断点拦截、改包重放、生成请求代码
-- 列举应用、读数据库、管理 Hook 规则
+**工具按需暴露**：没抓包时只暴露 24 个（省 58% 上下文），开抓包后自动补齐。
 
 ---
 
 ## 前置要求
 
-| 项 | 要求 |
-|---|---|
-| Android | 7.0+（API 26） |
-| Root | **必需**（Magisk / KernelSU / APatch） |
-| Xposed | **必需**（LSPosed，Zygisk 版） |
-| 证书 | 抓 HTTPS 时需要，二选一：装系统 CA，或开目标应用的「SSL 证书信任」开关 |
+- Android 7.0+
+- Root（Magisk / KernelSU / APatch）
+- LSPosed（Zygisk 版）
 
 ---
 
 ## 安装
 
-1. 编译或下载 APK 安装
-2. 打开 LSPosed → 模块 → 启用「算法助手公益版」
-3. 进入**作用域**，勾选要分析的目标应用
-4. 强行停止目标应用，重新打开
-5. 回到 APP 首页，应该显示「模块已启用」
+1. 下载 `AlgorithmAidePro-x.x.x.apk`
+2. 安装后在 **LSPosed** 中启用模块并勾选作用域
+3. 重启目标应用
 
-> **最容易漏的一步是作用域。** 只启用模块不勾作用域，Hook 不会对任何应用生效。
+代理抓包需把 CA 证书装进系统信任区：抓包页 → 帮助 → 一键安装（需 root）。
 
 ---
 
 ## 构建
 
 ```bash
-./gradlew :app:assembleDebug
+# 需要 JDK 17+、Android SDK 36
+./gradlew :app:assembleRelease
 ```
 
-产物：`app/build/outputs/apk/debug/AlgorithmAidePro-3.0.0-debug.apk`
+> Windows 中文用户名环境下需设置 `GRADLE_USER_HOME` 到纯英文路径，否则 Gradle worker 会报 `ClassNotFoundException`。
 
-环境：JDK 17+、Android SDK 36、Gradle 8.11.1（wrapper 已内置）
+签名配置放 `key.properties`（已在 `.gitignore` 中，不提交）：
 
-### Windows 中文用户名注意
-
-用户目录含中文（如 `C:\Users\李大爷\`）时，Gradle 启动测试 worker 会失败：
-
-```
-ClassNotFoundException: worker.org.gradle.process.internal.worker.GradleWorkerMain
-```
-
-`assembleDebug` 不受影响，只有 `test*` 任务会中招。把 `GRADLE_USER_HOME` 指向纯英文路径即可：
-
-```powershell
-$env:GRADLE_USER_HOME = "G:\gradle-home"
-./gradlew :app:testDebugUnitTest
+```properties
+storeFile=keystore/xxx.jks
+storePassword=***
+keyAlias=***
+keyPassword=***
 ```
 
----
-
-## 测试
-
-```bash
-./gradlew :app:testDebugUnitTest
-```
-
-覆盖 HTTP 解析与响应体解码 52 个用例（chunked / obs-fold / gzip / deflate / 截断 / 异常路径）。
+没有该文件时构建会跳过签名，方便别人 clone 后直接跑 debug。
 
 ---
 
 ## 使用
 
-### 日志
+**日志**：应用页启用 Hook → 启动目标应用 → 日志页看该应用的全部记录。
 
-1. 「应用」页搜索目标应用，打开总开关
-2. 按需开启具体 Hook 项（默认全关）
-3. 强行停止目标应用，重新打开
-4. 回到「日志」页，顶部按应用筛选，点进去看详情
+**抓包**：抓包页 → 点「Hook 抓包」或「代理抓包」→ 进入请求列表 → 点某条看详情。
 
-### 抓包
+**MCP**：设置页开启服务后连接：
 
-**Hook 抓包**：开目标应用的「HTTP 抓包」开关 → 重启应用 → 抓包页查看
+```
+本地：http://127.0.0.1:19191/mcp
+局域网：http://<手机IP>:19191/mcp
+```
 
-**代理抓包**：抓包页点「启动代理抓包」→ 首次弹系统 VPN 授权框点确定 → 操作目标应用
+PC 端可 `adb forward tcp:19191 tcp:19191` 后连 `127.0.0.1:19191`。
 
-### MCP
-
-设置 → MCP 服务 → 启动，然后配置客户端：
+`GET /health` 查状态：
 
 ```json
-{
-  "mcpServers": {
-    "aidepro": {
-      "url": "http://127.0.0.1:19191/mcp"
-    }
-  }
-}
+{"status":"ok","tools":24,"toolsTotal":56,"port":19191,"lan":true}
 ```
-
-电脑上使用时先转发端口：
-
-```bash
-adb forward tcp:19191 tcp:19191
-```
-
-验证：`curl http://127.0.0.1:19191/health`
-
-局域网模式：设置里打开「允许局域网访问」，同一 WiFi 下直接连手机 IP，无需 adb，**不校验令牌**。
 
 ---
 
 ## 已知限制
 
-| 场景 | 说明 |
+| 项 | 说明 |
 |---|---|
-| **证书固定（SSL Pinning）** | 谷歌服务、部分银行类应用抓不到，Hook 也拦不住。可以试 `justTrustMePlushSwitch` 开关 |
-| **R8 全混淆的 OkHttp** | Hook 抓包靠方法签名动态探测，完全混淆时可能定位失败，改用代理抓包 |
-| **无 SNI 的 HTTPS** | 代理抓包靠 ClientHello 的 SNI 判断目标，直连 IP 的请求会失败 |
-| **模块状态检测** | 没 root 读不到框架配置时显示「无法确认」——这是检测受限，不代表功能不可用 |
+| Hook 抓包无原始报文 | Java 层拿不到字节流，`network_packets` 会回退成 HTTP 序列 |
+| 部分应用证书校验 | 需开「SSL 证书信任」开关（有风险，某些应用会闪退） |
+| Frida | 依赖 `frida-inject`；arm64 已内置（零联网），其他 ABI 需下载 |
 
 ---
 
-## 工程结构
+## 项目结构
 
 ```
-app/src/main/java/com/junge/aidepro/
-├── AideProApp.kt              Application（Hilt 入口、MCP 自启）
-├── MainActivity.kt            单 Activity + Compose Navigation
-├── data/
-│   ├── model/                 领域模型
-│   └── db/                    Room：实体、DAO、转换器、映射
-├── hook/
-│   ├── XpEntry.kt             Xposed 入口
-│   ├── config/                配置体系（49 项开关 + 全局选项）
-│   ├── engine/
-│   │   ├── HookEngine.kt      引擎：安装时机 + 异常隔离 + 重试
-│   │   ├── HookModule.kt      模块 SPI
-│   │   ├── IpcLogReporter.kt  跨进程日志上报
-│   │   └── CallStackCapture.kt 调用堆栈采集（过滤系统帧）
-│   └── modules/               各功能模块
-│       ├── CryptoModules.kt   Digest / Mac / Cipher
-│       ├── HttpCaptureModule.kt  OkHttp / HttpURLConnection / WebView
-│       ├── NetworkModules.kt  SSL 信任 / Root 绕过 / 隐藏
-│       ├── StorageModules.kt  SQLite / SP / 文件 / Shell
-│       └── UiModules.kt       UI / WebView / 生命周期
-├── ipc/
-│   ├── AlgorithmServiceHost.kt  Binder 服务实现（uid 白名单）
-│   ├── AlgorithmServiceProvider.kt  ContentProvider 握手
-│   └── LogIngest.kt           日志落库
-├── capture/
-│   ├── http/HttpParser.kt     HTTP/1.x 解析（纯 Kotlin，可单测）
-│   ├── http/BodyDecoder.kt    gzip/deflate 解压
-│   ├── CaptureRepository.kt   会话与流量
-│   └── AnalysisRepository.kt  分析查询（域名汇总、端点提取、敏感信息）
-├── mitm/
-│   ├── MitmProxyServer.kt     代理服务器
-│   ├── TlsTerminator.kt       SSLEngine 驱动（Android 上唯一可靠路径）
-│   ├── CertificateManager.kt  CA 管理与动态签发
-│   ├── X509Signer.kt          反射 sun.security 签发证书
-│   ├── DerEncoder.kt          手编码 DER（绕过 Android 裁剪）
-│   └── InterceptEngine.kt     断点与重写
-├── vpn/
-│   ├── CaptureVpnService.kt   VpnService
-│   ├── VpnPacketHandler.kt    用户态 TCP/IP 栈
-│   ├── ConnectionManager.kt   连接管理与代理决策
-│   ├── UidResolver.kt         uid → 包名（应用归属）
-│   └── socket/                NIO 通道与读写
-├── mcp/
-│   ├── McpHttpServer.kt       JDK ServerSocket 实现的 HTTP 传输
-│   ├── McpDispatcher.kt       JSON-RPC 分发
-│   └── tools/                 51 个工具实现
-└── ui/
-    ├── nav/Dest.kt            导航目的地
-    └── screens/               首页 / 应用 / 日志 / 抓包 / 设置
+app/src/main/java/com/sfzsgybb/ai/
+├── hook/         Xposed 模块（注入目标进程）
+│   ├── engine/   日志上报、调用栈采集
+│   └── modules/  各 Hook 模块（HTTP / 加密 / 存储 / 系统）
+├── ipc/          跨进程日志通道（AIDL + Bundle）
+├── capture/      会话管理与查询
+├── mitm/         MITM 解密引擎（SSLEngine + 动态签发）
+├── vpn/          VpnService + 用户态 TCP/IP 栈
+├── mcp/          MCP 服务与工具
+├── data/         Room 数据库
+└── ui/           Compose 界面
 ```
 
 ---
 
 ## 实现要点
 
-几个踩过坑的地方，留给后来人：
+几个容易踩的坑，记在这里免得后面的人再犯：
 
-**跨进程日志回传** —— LSPosed 2.1+ 下 `XSharedPreferences` 读不到宿主配置，`/data/local/tmp` 又受 SELinux 限制。改用 `ContentProvider.call()` 握手拿到宿主 `IBinder`，之后走 AIDL 回传，uid 白名单校验。
-
-**HTTPS 解密** —— Android 裁剪了 `sun.security.x509`，`SubjectAlternativeNameExtension` 和 `BasicConstraintsExtension` 连构造函数都没有。只能用 `DerEncoder` 手工编码扩展，再喂给 `CertificateExtensions(DerInputStream)`。TLS 侧用 `SSLEngine` 手动驱动，`SSLSocketFactory.createSocket(Socket,...)` 在 Conscrypt 上握手成功率为 0。
-
-**VPN 不能漏 `protect()`** —— 转发出去的 socket 不绕过 VPN 就会回到 tun 形成环路，表现为应用一直转圈。
-
-**TCP 序列号是无符号 32 位** —— 按有符号 int 解析会得到负数，序列号比较和累加全乱，网络整个不通。
-
-**Hook 抓包必须替换响应体** —— `ResponseBody.bytes()` 会消费掉流，读完不还回去，业务代码拿到空 body，页面白屏。要用 `ResponseBody.create(MediaType, byte[])` 造副本再 `newBuilder().body().build()`。
-
-**模块状态检测** —— `Class.forName("XposedBridge")` 是错的（API 是 `compileOnly`，APK 里根本没这个类）。改成三级：读 LSPosed 配置库（需 root）→ 反射 XposedBridge → 读 `/proc/self/maps`（不需 root），任一级成立即判定已激活。
-
----
-
-## MCP 工具清单
-
-**日志** `list_logs` `get_log` `search_logs` `clear_logs` `get_log_graph` `get_log_total`
-
-**抓包会话** `capture_start` `capture_stop` `capture_status` `capture_sessions` `capture_delete_sessions`
-
-**网络记录** `network_list` `network_info` `network_packets` `network_packetBody` `network_stacks` `network_deletes` `http_info` `http_body`
-
-**请求分析** `get_request_list` `get_request_detail` `get_request_body` `search_requests` `get_request_stats` `get_domain_summary` `get_cookie_info` `compare_requests`
-
-**安全分析** `analyze_encrypted_content` `find_sensitive_data` `analyze_auth` `extract_api_endpoints`
-
-**流量控制** `replay_request` `generate_code` `add_breakpoint` `list_breakpoints` `remove_breakpoint` `get_pending_intercepts` `release_intercept` `list_rewrite_rules` `add_rewrite_rule` `remove_rewrite_rule`
-
-**脚本** `list_scripts` `get_script_content` `create_or_update_script`
-
-**抓包控制** `vpn_capture` `mitm_proxy`
-
-**应用与其他** `list_apps` `list_databases` `frida_get_log` `frida_clear_log` `host_mcp_instructions`
-
----
-
-## 交流与反馈
-
-遇到问题、想交流逆向技巧，或者有功能建议，欢迎加入社区：
-
-**https://docs.qq.com/doc/DUHZkb1hLWmhQQXN5**
-
-提 Issue 也可以，但社区里回复更快。
+- **证书格式**：系统 CA 目录只认 PEM，写成 DER 会导致所有 HTTPS 握手失败
+- **VPN 白名单**：`addAllowedApplication` 与 `addDisallowedApplication` 不能混用
+- **CursorWindow**：列表查询不能带 BLOB，用投影 + `substr` 切片
+- **MCP 读 body**：按字节读；`BufferedReader` 按字符读会在中文时卡死
+- **frida-inject**：默认 qjs runtime 没有 Java bridge，必须 `-R v8`
 
 ---
 
 ## 许可证
 
-见 [LICENSE](LICENSE)。
+仅供学习交流。使用者自行承担因使用本工具产生的一切后果。

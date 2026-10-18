@@ -82,6 +82,21 @@ class AnalysisRepository(private val dao: AnalysisDao) {
     suspend fun recentHttpAll(limit: Int, source: String = ""): List<HttpRecord> =
         dao.recentHttpAll(limit, source).map { it.toModel() }
 
+    /**
+     * 是否已有任何抓包记录（MCP 工具按需暴露用）。
+     *
+     * availability() 是同步调用，不能查库 —— 走共享探针。
+     */
+    fun hasAnyRecord(): Boolean = CaptureDataProbe.hasAnyData()
+
+    /** 异步从库同步一次真实状态（启动或清空后调用）。 */
+    suspend fun refreshHasRecord() {
+        runCatching {
+            val has = dao.countFilterHttp("", "", "", -1, "") > 0
+            if (has) CaptureDataProbe.markData()
+        }
+    }
+
     /** 按时间范围扫描（用于内容搜索，因为正文在 SQL 里搜不了）。 */
     suspend fun scan(sessionId: String, startTime: Long, endTime: Long, limit: Int): List<HttpRecord> =
         dao.scanForBodySearch(sessionId, startTime, endTime, limit).map { it.toModel() }

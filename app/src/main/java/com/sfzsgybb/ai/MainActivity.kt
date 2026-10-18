@@ -46,6 +46,8 @@ import dagger.hilt.android.AndroidEntryPoint
 import com.sfzsgybb.ai.ui.screens.HomeScreen
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
+import com.sfzsgybb.ai.ui.screens.CaptureHomeScreen
+import com.sfzsgybb.ai.ui.screens.CaptureTrafficScreen
 
 /**
  * 单 Activity + Compose Navigation。
@@ -119,10 +121,43 @@ private fun AideProRoot() {
             composable(Dest.Logs.route) {
                 LogListScreen(onOpenLog = { navController.navigate(Dest.LogDetail.of(it)) })
             }
+            // 从抓包页「查看日志」图标跳过来时带 pkg 参数：
+            // 直接进该应用的日志列表，不用在应用卡片里再找一遍。
+            composable(
+                "${Dest.Logs.route}?${Dest.Logs.PKG_QUERY}={${Dest.Logs.PKG_QUERY}}",
+                arguments = listOf(
+                    navArgument(Dest.Logs.PKG_QUERY) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                ),
+            ) { entry ->
+                val pkg = entry.arguments?.getString(Dest.Logs.PKG_QUERY)
+                LogListScreen(
+                    onOpenLog = { navController.navigate(Dest.LogDetail.of(it)) },
+                    initialPackage = pkg,
+                )
+            }
+            // 抓包首页：只有两个入口按钮（Hook / 代理）
             composable(Dest.Capture.route) {
-                CaptureScreen(
+                CaptureHomeScreen(
+                    onOpenHook = { navController.navigate(Dest.CaptureTraffic.of("hook")) },
+                    onOpenVpn = { navController.navigate(Dest.CaptureTraffic.of("vpn")) },
                     onOpenHistory = { navController.navigate(Dest.CaptureHistory.route) },
-                    onOpenSession = { navController.navigate(Dest.SessionDetail.of(it)) },
+                )
+            }
+            // 抓到的请求列表（钻进某一种抓包后）
+            composable(
+                Dest.CaptureTraffic.route,
+                arguments = listOf(
+                    navArgument(Dest.CaptureTraffic.MODE_ARG) { type = NavType.StringType },
+                ),
+            ) { entry ->
+                val mode = entry.arguments?.getString(Dest.CaptureTraffic.MODE_ARG) ?: "hook"
+                CaptureTrafficScreen(
+                    mode = mode,
+                    onBack = { navController.popBackStack() },
                     onOpenHttp = { navController.navigate(Dest.HttpDetail.of(it)) },
                 )
             }
@@ -144,6 +179,7 @@ private fun AideProRoot() {
                     onOpenHooks = { navController.navigate(Dest.HookList.of(pkg)) },
                     onOpenFrida = { navController.navigate(Dest.FridaEditor.of(pkg)) },
                     onOpenFridaLog = { navController.navigate(Dest.FridaLog.of(pkg)) },
+                    onOpenLogs = { navController.navigate(Dest.Logs.withPackage(pkg)) },
                 )
             }
 

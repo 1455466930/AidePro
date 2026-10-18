@@ -277,6 +277,8 @@ class McpHttpServer(
                 sb.append("{\"status\":\"ok\"")
                 sb.append(",\"protocol\":\"").append(McpConstants.PROTOCOL_VERSION).append('"')
                 sb.append(",\"tools\":").append(dispatcher.toolNames().size)
+                // 全部工具数：和 tools 对比就能看出当前隐藏了多少
+                sb.append(",\"toolsTotal\":").append(dispatcher.allToolNames().size)
                 sb.append(",\"port\":").append(actualPort)
                 sb.append(",\"lan\":").append(!config.bindLocalhostOnly)
                 sb.append(",\"authRequired\":").append(!config.authToken.isNullOrBlank())

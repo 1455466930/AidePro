@@ -46,6 +46,19 @@ class CaptureRepository(private val dao: CaptureDao) {
     @Volatile private var activeStartedAt: Long = 0L
 
     /**
+     * 是否曾经抓到过数据。
+     *
+     * 会话停掉后 activeSessionId 会清空，但数据库里还有记录，
+     * 这时 MCP 工具仍然应该可用 —— 用共享探针补上。
+     */
+    fun hasAnySession(): Boolean = CaptureDataProbe.hasAnyData()
+
+    /** 插入记录时置位，让工具列表立刻反映「有数据了」。 */
+    private fun touchSessionProbe(hasData: Boolean) {
+        if (hasData) CaptureDataProbe.markData()
+    }
+
+    /**
      * 取当前活跃会话 ID。
      *
      * 【为什么不能只用内存变量】
@@ -160,6 +173,7 @@ class CaptureRepository(private val dao: CaptureDao) {
         activeFilterLocal = filterLocalRequests
         activeSource = source
         activeStartedAt = session.startedAt
+        CaptureDataProbe.hasActiveSession = true
         return session
     }
 
@@ -220,6 +234,7 @@ class CaptureRepository(private val dao: CaptureDao) {
     suspend fun clearAllSessions(): Int {
         val all = dao.sessions(1000).map { it.sessionId }
         activeSessionId = null
+        CaptureDataProbe.hasActiveSession = false
         activePackage = null
         activeStartedAt = 0L
         dao.clearHttp()
@@ -290,6 +305,7 @@ class CaptureRepository(private val dao: CaptureDao) {
             ).toEntity()
         )
         bumpCount(sid)
+        touchSessionProbe(true)
         return id
     }
 
@@ -497,6 +513,41 @@ class CaptureRepository(private val dao: CaptureDao) {
         dao.clearPackets()
         runCatching { dao.deleteOrphanStacks() }
         activeSessionId = null
+    }
+
+    /**
+     * 删除已抓到的请求记录，**保留会话**。
+     *
+     * 【和 clearAll 的区别】
+     * clearAll 连会话一起删（抓包历史也没了，正在跑的会话会被踢掉）；
+     * 这里只删流量记录，会话保留 —— 抓包还在跑的话清完继续抓。
+     *
+     * @param packageName 传 null 删全部；传包名只删该应用的
+     * @return 删除条数
+     */
+    suspend fun clearTraffic(packageName: String? = null): Int = runCatching {
+        val httpIds = if (packageName.isNullOrBlank()) {
+            dao.allHttpIds()
+        } else {
+            dao.httpIdsByPackage(packageName)
+        }
+        // 先删堆栈（按 ownerId），再删记录，避免遗留孤儿堆栈
+        if (httpIds.isNotEmpty()) dao.deleteStacksOf(httpIds)
+
+        if (packageName.isNullOrBlank()) {
+            dao.clearHttp()
+            dao.clearPackets()
+        } else {
+            dao.deleteHttpByPackage(packageName)
+            dao.deletePacketsByPackage(packageName)
+        }
+        // 会话本身的记录数清零（会话保留，便于继续抓）
+        dao.resetAllRecordCounts()
+        if (packageName.isNullOrBlank()) CaptureDataProbe.markCleared()
+        httpIds.size
+    }.getOrElse {
+        android.util.Log.w("CaptureRepository", "clearTraffic 失败: ${it.message}")
+        0
     }
 
     // ---------- 渲染 ----------

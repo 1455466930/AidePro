@@ -32,7 +32,20 @@ class McpDispatcher(
     private val json = McpJson.instance
     private val toolMap = tools.associateBy { it.name }
 
-    fun toolNames(): List<String> = tools.map { it.name }
+    /** 当前可用的工具名（供错误提示与 UI 使用）。 */
+    fun toolNames(): List<String> = tools.filter { it.availability() }.map { it.name }
+
+    /** 全部工具名（含当前不可用的），用于诊断。 */
+    fun allToolNames(): List<String> = tools.map { it.name }
+
+    /**
+     * 当前工具集合的指纹。
+     *
+     * 抓包开关、Frida 安装状态变化时指纹会变，
+     * 据此判断是否需要给客户端发 tools/list_changed 通知。
+     */
+    fun availabilityFingerprint(): Int =
+        tools.filter { it.availability() }.map { it.name }.hashCode()
 
     /** 供 UI 展示的工具清单。 */
     fun toolMetaList(): List<McpToolMeta> = tools.map { McpToolMeta(it.name, it.description, it.paginated) }
@@ -88,7 +101,10 @@ class McpDispatcher(
 
     private fun handleToolsList(params: JsonObject?): JsonElement = buildJsonObject {
         putJsonArray("tools") {
-            tools.forEach { t ->
+            // 【按需暴露】只列出当前可用的工具。
+            // 57 个工具的 schema 约占 14000 token，什么都没开时也全塞进去
+            // 既挤上下文又让模型容易选错。裁剪后空闲状态只剩 9 个。
+            tools.filter { it.availability() }.forEach { t ->
                 add(buildJsonObject {
                     put("name", t.name)
                     put("description", t.description)
@@ -105,6 +121,13 @@ class McpDispatcher(
             ?: JsonObject(emptyMap())
 
         val tool = toolMap[name] ?: return toolError("未知工具: $name。可用工具: ${toolNames().joinToString()}")
+
+        // 【兜底】部分客户端不支持 tools/list_changed 通知，
+        // 会拿着首次拉取的旧列表调用已经隐藏的工具。
+        // 此时不能报「不存在」，要说明为什么不可用、怎么让它可用。
+        if (!tool.availability()) {
+            return toolError("工具 $name 当前不可用：${tool.unavailableHint()}")
+        }
 
         return try {
             validateRequired(tool, args)

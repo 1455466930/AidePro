@@ -133,9 +133,31 @@ class AppDetailViewModel @Inject constructor(
         )
     }
 
+    /**
+     * 启用/关闭 Hook 总开关。
+     *
+     * 【为什么打开时要自动带开 HTTP 抓包】
+     * 用户开 Hook 的目的是「看这个应用在做什么」，而 HTTP 抓包是最主要的用途。
+     * 之前开了总开关却关着 HTTP 抓包，表现为「Hook 激活了但抓不到任何请求」，
+     * 用户会以为是 bug。所以打开总开关时顺带把 HTTP 抓包打开。
+     *
+     * 【为什么不连 SSL 证书信任一起开】
+     * JustTrustMe 会让目标应用**完全跳过证书校验**，改变其安全行为。
+     * 银行、支付类应用会检测到并闪退或拒绝服务 —— 属于「破防」操作，
+     * 必须由用户明确选择，不能默认打开。
+     *
+     * 关闭总开关时不动子开关：用户下次再打开，之前的配置还在。
+     */
     fun setAppEnabled(v: Boolean) {
-        configRepository.setAppEnabled(_state.value.packageName, v)
-        _state.value = _state.value.copy(enabled = v)
+        val pkg = _state.value.packageName
+        configRepository.setAppEnabled(pkg, v)
+
+        var switches = _state.value.switches
+        if (v && switches[HookSwitch.HTTP_CAPTURE.key] != true) {
+            configRepository.setSwitch(pkg, HookSwitch.HTTP_CAPTURE, true)
+            switches = switches + (HookSwitch.HTTP_CAPTURE.key to true)
+        }
+        _state.value = _state.value.copy(enabled = v, switches = switches)
     }
 
     fun setSwitch(sw: HookSwitch, on: Boolean) {
@@ -451,6 +473,27 @@ class LogListViewModel @Inject constructor(
             _state.value = _state.value.copy(loading = true)
             loadPage(append = false, gen = gen)
         }
+    }
+
+    /**
+     * 切换/清空按应用过滤。
+     *
+     * 从抓包页的「查看日志」图标跳转过来时用它直接定位到某个应用；
+     * 传 null 表示回到「应用卡片列表」。
+     */
+    fun setPackageFilter(pkg: String?) {
+        if (_state.value.packageFilter == pkg) return
+        searchJob?.cancel()
+        _state.value = _state.value.copy(
+            packageFilter = pkg,
+            query = "",
+            groupFilter = -1,
+            logs = emptyList(),
+            hasMore = true,
+        )
+        cursorTime = Long.MAX_VALUE
+        cursorId = Long.MAX_VALUE
+        refresh()
     }
 
     /** 增量游标翻页：不会因新数据插入而重复。 */

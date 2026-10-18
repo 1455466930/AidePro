@@ -196,8 +196,22 @@ class CaptureViewModel @Inject constructor(
      * 所以默认把「在应用列表里勾选了 Hook 的应用」作为白名单传下去。
      * 只有用户显式选择「全局抓包」时才不做限制。
      */
+    /**
+     * 启动代理抓包。
+     *
+     * 【互斥设计】两种抓包不能同时开：
+     *  - Hook 抓包走 Java 层，代理抓包走路由层，同时开会把同一请求记两遍
+     *  - 用户也分不清哪条数据来自哪条链路
+     * 所以开代理前先把 Hook 抓包停掉。
+     */
     fun startVpn(globalCapture: Boolean = false) {
         viewModelScope.launch {
+            // 【互斥】先把 Hook 抓包收掉，再开代理
+            if (_state.value.running) {
+                runCatching { stop() }
+                notify("已自动关闭 Hook 抓包（两种抓包不能同时运行）")
+            }
+
             val allow = if (globalCapture) null else enabledHookPackages()
             if (!globalCapture && allow.isNullOrEmpty()) {
                 notify("请先在「应用」页勾选要抓包的应用（或选择全局抓包）")
@@ -535,11 +549,22 @@ class CaptureViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 启动 Hook 抓包。
+     *
+     * 【互斥】开 Hook 前先把代理抓包停掉 —— 两条链路同时开会：
+     *  - 同一请求被记两遍（Java 层 + 路由层各一条）
+     *  - 流量翻倍，用户分不清数据来源
+     */
     fun start() {
         viewModelScope.launch {
+            if (_state.value.vpnRunning) {
+                runCatching { stopVpn() }
+                notify("已自动关闭代理抓包（两种抓包不能同时运行）")
+            }
             val pkg = _state.value.packageName ?: DEFAULT_TARGET
             repo.start(pkg, _state.value.filterLocal)
-            notify("已开始抓包：$pkg")
+            notify("已开始 Hook 抓包：$pkg")
             refresh()
         }
     }
@@ -582,6 +607,26 @@ class CaptureViewModel @Inject constructor(
             val n = repo.clearAllSessions()
             notify("已清空 $n 个会话")
             refresh()
+        }
+    }
+
+    /**
+     * 一键删除当前抓到的请求。
+     *
+     * 【和 clearAll 的区别】
+     * clearAll 连会话一起删（历史也没了）；
+     * 这里只删流量记录，**保留会话**——抓包还在跑的话，
+     * 清完继续抓，不会被踢出当前会话。
+     *
+     * 注意只清当前筛选下的数据（选了应用就只清那个应用的），
+     * 否则用户筛着 A 应用点删除，把 B 应用的数据也清了会很困惑。
+     */
+    fun clearTraffic() {
+        viewModelScope.launch {
+            val pkg = _state.value.selectedPackage
+            val n = repo.clearTraffic(pkg)
+            notify(if (n > 0) "已删除 $n 条请求" else "没有可删除的请求")
+            loadTraffic()
         }
     }
 
