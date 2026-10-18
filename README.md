@@ -6,7 +6,7 @@ Android 逆向分析工具：**加密算法日志** + **双通道抓包** + **MC
 
 > 仅用于自有设备上的应用调试与协议分析。
 
-**交流反馈**：[加入社区](https://docs.qq.com/doc/DUHZkb1hLWmhQQXN5)
+**交流反馈**：[加入社区](https://docs.qq.com/doc/DUHZkb1hLWmhQQXN5) · [开源仓库](https://github.com/1455466930/AidePro)
 
 ---
 

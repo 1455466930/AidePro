@@ -1,5 +1,6 @@
 package com.sfzsgybb.ai.ui.screens
 
+
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -65,6 +66,15 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import com.sfzsgybb.ai.ui.components.cardOutline
 
+/**
+ * 项目开源地址。
+ *
+ * 设置页「其他」里的入口用这个跳转 —— 用户看得到源码，
+ * 也方便他们自己提 issue 或看更新。
+ */
+private const val PROJECT_REPO_URL = "https://github.com/1455466930/AidePro"
+
+
 // ---------------- 设置 ----------------
 
 @Composable
@@ -119,6 +129,16 @@ fun SettingsScreen(
             }
 
             item { SectionHeader("其他") }
+            item {
+                // 开源地址：点一下用浏览器打开仓库
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                SettingsNavRow(
+                    title = "开源地址",
+                    subtitle = PROJECT_REPO_URL.removePrefix("https://"),
+                    active = false,
+                    onClick = { com.sfzsgybb.ai.ui.components.openUrl(ctx, PROJECT_REPO_URL) },
+                )
+            }
             item { SettingsNavRow("关于", "版本 ${state.versionName}", false, onOpenAbout) }
         }
     }
