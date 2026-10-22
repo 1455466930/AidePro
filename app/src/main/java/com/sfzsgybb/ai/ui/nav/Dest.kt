@@ -47,6 +47,9 @@ sealed class Dest(val route: String, val title: String) {
     }
     data object CaptureHistory : Dest("capture/history", "抓包历史")
 
+    /** 缓存管理页（查看占用、选择清理）。 */
+    data object CacheSettings : Dest("settings/cache", "缓存管理")
+
     /**
      * 抓到的请求列表（钻进某一种抓包后）。
      *
@@ -68,8 +71,15 @@ sealed class Dest(val route: String, val title: String) {
     data object HookList : Dest("apps/{packageName}/hooks", "Hook 规则") {
         fun of(pkg: String) = "apps/$pkg/hooks"
     }
+    /** Frida 脚本列表（一个应用可以有多个脚本）。 */
     data object FridaEditor : Dest("frida/{packageName}", "Frida 脚本") {
         fun of(pkg: String) = "frida/$pkg"
+    }
+
+    /** 编辑某个具体脚本。 */
+    data object FridaScriptEdit : Dest("frida/{packageName}/{scriptId}", "编辑脚本") {
+        const val SCRIPT_ARG = "scriptId"
+        fun of(pkg: String, scriptId: String) = "frida/$pkg/$scriptId"
     }
     data object FridaLog : Dest("frida/{packageName}/log", "Frida 日志") {
         fun of(pkg: String) = "frida/$pkg/log"

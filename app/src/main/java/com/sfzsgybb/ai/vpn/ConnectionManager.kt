@@ -135,6 +135,18 @@ class ConnectionManager(
 
         val proxy = proxyAddress ?: return real
 
+        // 【端口优先】
+        // 之前只看第一个包的字节来猜协议，问题在于「第一个数据包」不一定
+        // 就是请求行：keep-alive 复用连接时它可能是上一个响应的尾巴，
+        // 分片时也可能只有半行。猜错就走直连，而且 isInitConnect 已置位，
+        // 这条连接再也变不回来 —— 表现就是「同一个域名 Hook 能抓到、代理抓不到」。
+        //
+        // 80 端口的明文 HTTP 直接送代理，不需要看内容。
+        if (dstPort == 80) {
+            Log.d(TAG, "转发到代理（80 端口）: $dstIpStr:$dstPort → $proxy")
+            return proxy
+        }
+
         // 只把 HTTP/TLS 流量送进代理，其他直连（否则非 HTTP 协议会断）
         return if (isHttpOrTls(firstPayload)) {
             Log.d(TAG, "转发到代理: $dstIpStr:$dstPort → $proxy")

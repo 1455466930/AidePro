@@ -116,10 +116,20 @@ class MitmController @Inject constructor(
     val persistOkCount = java.util.concurrent.atomic.AtomicLong()
 
     private suspend fun persist(tx: HttpTransaction) {
+        // 暂停记录时不入库，但连接照常转发（应用不断网）
+        if (com.sfzsgybb.ai.capture.CaptureDataProbe.paused) return
         runCatching {
             // 【D4 修复】用「没有就创建」的版本，并带上归属应用的包名：
             // VPN 抓包时每个应用独立一个会话，按应用查流量不用二次过滤。
-            val sessionId = repository.ensureOrCreateSession(tx.ownerPackage ?: "自动抓包")
+            //
+            // 【必须显式传 source="vpn"】
+            // 这个参数默认值是 "hook"，漏传会把代理抓包的会话标成 Hook ——
+            // 会话 source 和记录 source 从此对不上，
+            // 抓包历史的分组、按来源过滤的条数全都会错乱。
+            val sessionId = repository.ensureOrCreateSession(
+                packageName = tx.ownerPackage ?: "自动抓包",
+                source = "vpn",
+            )
             if (sessionId == null) {
                 Log.w(TAG, "入库失败：无法获取/创建会话，丢弃 ${tx.url}")
                 persistFailCount.incrementAndGet()
@@ -127,7 +137,7 @@ class MitmController @Inject constructor(
             }
             if (!repository.shouldRecord(tx.url, tx.host)) return@runCatching
 
-            repository.insertHttp(
+            val httpId = repository.insertHttp(
                 com.sfzsgybb.ai.data.model.HttpRecord(
                     sessionId = sessionId,
                     // 【来源标记】这条数据来自代理抓包（路由层 + MITM 解密）
@@ -162,7 +172,9 @@ class MitmController @Inject constructor(
             }
             logRepository.insert(
                 com.sfzsgybb.ai.data.model.LogRecord(
-                    packageName = null,
+                    // 【归属】之前这里写死 null，导致代理抓包的日志在日志页
+                    // 归到「未知应用」，和抓包页按应用筛选的结果对不上。
+                    packageName = tx.ownerPackage,
                     logName = "HTTP " + tx.method,
                     className = "",
                     objName = "",
@@ -177,6 +189,8 @@ class MitmController @Inject constructor(
                     resultCrc = com.sfzsgybb.ai.log.LogRepository.crc(tx.responseBody),
                     size = tx.responseBody.size,
                     time = tx.startTime,
+                    // 【双向关联】删日志时能级联删抓包记录，反之亦然
+                    httpRecordId = httpId,
                 )
             )
             persistOkCount.incrementAndGet()

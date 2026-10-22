@@ -84,6 +84,11 @@ class VpnController @Inject constructor(
                 context.startService(intent)
             }
             lastError = null
+            // 【探针】VPN 启动即代表「正在抓包」，把 MCP 的查询类工具放出来。
+            // 不置位的话，用户从 MCP 调 vpn_capture start 之后
+            // 依然看不到 get_request_list 这类工具 —— 因为它们只在有数据时才暴露，
+            // 而「刚开始抓、还没抓到」这个状态没人标记。
+            com.sfzsgybb.ai.capture.CaptureDataProbe.hasActiveSession = true
             StartResult.STARTED
         } catch (t: Throwable) {
             lastError = "${t.javaClass.simpleName}: ${t.message}"
@@ -126,6 +131,9 @@ class VpnController @Inject constructor(
         } catch (t: Throwable) {
             Log.w(TAG, "停止 VPN 失败: ${t.message}")
         }
+        // 停止后不再算「抓包中」。库里若还有历史记录，
+        // 探针会在下次记录变更时按实际条数重新校准。
+        com.sfzsgybb.ai.capture.CaptureDataProbe.hasActiveSession = false
     }
 
     /** 状态摘要。 */

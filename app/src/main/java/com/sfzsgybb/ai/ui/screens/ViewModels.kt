@@ -151,13 +151,12 @@ class AppDetailViewModel @Inject constructor(
     fun setAppEnabled(v: Boolean) {
         val pkg = _state.value.packageName
         configRepository.setAppEnabled(pkg, v)
-
-        var switches = _state.value.switches
-        if (v && switches[HookSwitch.HTTP_CAPTURE.key] != true) {
-            configRepository.setSwitch(pkg, HookSwitch.HTTP_CAPTURE, true)
-            switches = switches + (HookSwitch.HTTP_CAPTURE.key to true)
-        }
-        _state.value = _state.value.copy(enabled = v, switches = switches)
+        // 【不再自动打开 HTTP 抓包】
+        // 之前打开总开关时会顺手把 HTTP 抓包也打开（想省用户一步），
+        // 实际体验却是「我明明没开抓包，它自己开了」：
+        // 用户无法预判开关状态，也看不出是什么时候被改的。
+        // 现在总开关只管总开关，每个子开关都由用户自己控制。
+        _state.value = _state.value.copy(enabled = v)
     }
 
     fun setSwitch(sw: HookSwitch, on: Boolean) {
@@ -176,33 +175,57 @@ class AppDetailViewModel @Inject constructor(
     // ---------- 启动 / 重启 ----------
 
     /**
-     * 仅启动目标应用。
+     * 一键让配置生效。
      *
-     * forceStop 那一路有自己的 busy 标志，但「启动」和「强停并重启」
-     * 是两个按钮、同一个 busy，所以要一起判。
+     * 【为什么合并成一个按钮】
+     * 之前界面并列「强停并重启」和「启动应用」两个按钮：
+     *  - 占地方，卡片被撑得很高
+     *  - 用户还得先判断「现在到底在不在跑」再选按钮
+     *
+     * 而实际意图只有一个：**让改动生效**。所以：
+     *  - 应用在运行   → 强停 + 重启（必须这么做才能让 Hook 重新加载配置）
+     *  - 应用没在运行 → 直接启动，省掉多余的强停和等待
      */
     fun launchApp() {
         if (_state.value.busy) return
+        val pkg = _state.value.packageName
+        val running = _state.value.targetRunning
+
         _state.value = _state.value.copy(busy = true)
-        when (val r = AppLauncher.launch(appContext, _state.value.packageName)) {
-            is AppLauncher.Result.Success ->
-                notify("已启动 ${_state.value.appLabel}，等几秒后到「日志」页查看")
-            is AppLauncher.Result.Failed -> notify(r.reason)
+        viewModelScope.launch {
+            try {
+                if (running) {
+                    // 在跑：必须强停，否则新配置不生效
+                    val stop = AppLauncher.forceStop(pkg)
+                    if (stop is AppLauncher.Result.Failed) {
+                        notify("${stop.reason}（已为你打开设置页）")
+                        AppLauncher.openAppSettings(appContext, pkg)
+                        return@launch
+                    }
+                    kotlinx.coroutines.delay(800)
+                }
+                when (val r = AppLauncher.launch(appContext, pkg)) {
+                    is AppLauncher.Result.Success ->
+                        notify(
+                            if (running) "已重启 ${_state.value.appLabel}"
+                            else "已启动 ${_state.value.appLabel}，等几秒后到日志页查看"
+                        )
+                    is AppLauncher.Result.Failed -> notify(r.reason)
+                }
+            } finally {
+                // 放 finally 里，中途取消/异常也要把按钮解禁，
+                // 否则按钮会永远卡在禁用状态
+                _state.value = _state.value.copy(busy = false)
+                refreshRunning()
+            }
         }
-        _state.value = _state.value.copy(busy = false)
-        refreshRunning()
     }
 
     /**
-     * 强停并重启。
+     * 强停并重启（保留给「只想重启、不想启动」的极端场景，界面已不单独提供入口）。
+     *
      * 这是配置改动后让 Hook 生效的标准操作：必须让目标应用重新走一遍
      * Application.onCreate，才会重新读取配置并安装模块。
-     *
-     * 【为什么要 busy】
-     * 整个流程是 forceStop → delay(800) → launch，中间有近一秒空档。
-     * 之前没有忙碌标志也不禁按钮，用户连点两次会并发跑两套，
-     * 第二次 launch 可能在第一次还没起来时就执行，目标应用起来两次或起不来。
-     * 流程很长，用户又会反复点 —— 这是很容易踩的坑。
      */
     fun restartApp() {
         if (_state.value.busy) return
@@ -281,6 +304,8 @@ data class LogListUiState(
      * 现在按实际数据生成，没有日志的分组不出现。
      */
     val groupCounts: Map<Int, Int> = emptyMap(),
+    /** 一次性操作提示（清空日志等），UI 显示后调 consumeMessage() 清空 */
+    val message: String? = null,
 ) {
     /** 按搜索词过滤后的应用列表。 */
     val filteredApps: List<LogAppOption>
@@ -310,6 +335,7 @@ class LogListViewModel @Inject constructor(
     private val logRepository: LogRepository,
     private val configRepository: ConfigRepository,
     private val appList: com.sfzsgybb.ai.mcp.tools.AppListProvider,
+    private val captureRepo: com.sfzsgybb.ai.capture.CaptureRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LogListUiState())
@@ -620,13 +646,57 @@ class LogListViewModel @Inject constructor(
     fun deleteAppLogs(pkg: String) {
         viewModelScope.launch {
             runCatching {
-                logRepository.clear(pkg)
+                // 【级联】同时删掉抓包页对应的记录，避免两边数据不一致
+                val httpIds = logRepository.clearWithCascade(pkg)
+                if (httpIds.isNotEmpty()) captureRepo.delete(httpIds.map { it.toString() })
                 loadAppOptions()
                 refresh()
             }.onFailure {
                 android.util.Log.w("LogListViewModel", "删除 $pkg 的日志失败: ${it.message}")
             }
         }
+    }
+
+    /**
+     * 清空全部日志（所有应用）。
+     *
+     * 和 [deleteAppLogs] 的区别：那个只删一个应用，这个全删。
+     * UI 上分别放在「应用列表页」和「单应用日志页」的顶栏。
+     */
+    fun clearAllLogs() {
+        viewModelScope.launch {
+            runCatching {
+                // 【级联】同时清掉抓包页的记录
+                val httpIds = logRepository.clearWithCascade(null)
+                if (httpIds.isNotEmpty()) captureRepo.delete(httpIds.map { it.toString() })
+                loadAppOptions()
+                refresh()
+                _state.value = _state.value.copy(message = "已清空日志及对应抓包记录")
+            }.onFailure {
+                _state.value = _state.value.copy(message = "清空失败：${it.message}")
+            }
+        }
+    }
+
+    /** 清空当前应用（已在某应用日志页时用）。 */
+    fun clearCurrentLogs() {
+        val pkg = _state.value.packageFilter ?: return
+        viewModelScope.launch {
+            runCatching {
+                // 【级联】同时删掉抓包页对应的记录
+                val httpIds = logRepository.clearWithCascade(pkg)
+                if (httpIds.isNotEmpty()) captureRepo.delete(httpIds.map { it.toString() })
+                refresh()
+                _state.value = _state.value.copy(message = "已删除日志及对应抓包记录")
+            }.onFailure {
+                _state.value = _state.value.copy(message = "删除失败：${it.message}")
+            }
+        }
+    }
+
+    /** UI 显示完提示后调用，避免重复弹出。 */
+    fun consumeMessage() {
+        _state.value = _state.value.copy(message = null)
     }
 
     fun clear() {

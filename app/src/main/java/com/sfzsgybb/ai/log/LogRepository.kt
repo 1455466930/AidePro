@@ -133,6 +133,48 @@ class LogRepository(private val dao: LogRecordDao) {
             }
         }
     }
+
+    /**
+     * 清空日志，**同时**返回需要级联删除的抓包记录 id。
+     *
+     * 日志页和抓包页写的是同一份数据的两张表，
+     * 只删一边会导致「删了但另一边还有」。
+     *
+     * @return 需要一并删掉的 http_record id 列表
+     */
+    suspend fun clearWithCascade(packageName: String? = null): List<Long> {
+        val httpIds = dao.httpIdsByLogPackage(packageName)
+        clear(packageName)
+        return httpIds
+    }
+
+    /** 删除指定日志，同时返回它们关联的抓包记录 id。 */
+    suspend fun deleteWithCascade(ids: List<Long>): List<Long> {
+        val httpIds = ids.mapNotNull { id ->
+            // 逐条查关联 id（日志详情删除是低频操作，性能可接受）
+            dao.httpIdOfLog(id)
+        }
+        delete(ids)
+        return httpIds
+    }
+
+
+    /**
+     * 按抓包记录 id 找出对应的日志 id。
+     *
+     * 抓包页删除记录时，用它把日志页的对应条目一起清掉。
+     */
+    suspend fun logIdsByHttp(httpIds: List<Long>): List<Long> {
+        if (httpIds.isEmpty()) return emptyList()
+        return dao.logIdsByHttpIds(httpIds)
+    }
+
+    /** 全部「有抓包关联」的日志 id（清空抓包时用）。 */
+    suspend fun logIdsByAllHttp(): List<Long> = dao.allLogIdsWithHttp()
+
+    /** 按包名查关联日志 id。 */
+    suspend fun logIdsByPackage(pkg: String?): List<Long> = dao.logIdsByPackageWithHttp(pkg)
+
 }
 
 /** 日志分组标签，供 MCP 输出可读文本。 */

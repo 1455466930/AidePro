@@ -646,6 +646,11 @@ class NetworkStacksTool(private val repo: CaptureRepository) : McpToolHandler {
 }
 
 class NetworkDeletesTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有记录时无从删起
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String = "当前没有可删除的抓包记录。"
+
     override val name = "network_deletes"
     override val description = "删除指定的 HTTP 请求或 TCP 连接记录。"
 
@@ -668,6 +673,12 @@ class NetworkDeletesTool(private val repo: CaptureRepository) : McpToolHandler {
 }
 
 class NetworkInfoTool(private val repo: CaptureRepository) : McpToolHandler {
+    // 【按需暴露】没有抓包数据时这个工具只能返回 record_not_found
+    override fun availability(): Boolean = repo.hasAnySession()
+
+    override fun unavailableHint(): String =
+        "当前没有抓包会话。先调用 vpn_capture 或 mitm_proxy 启动代理抓包，或在应用页启用 Hook。"
+
     override val name = "network_info"
     override val description = "获取指定记录的概要信息（协议、地址、大小、耗时）。"
 

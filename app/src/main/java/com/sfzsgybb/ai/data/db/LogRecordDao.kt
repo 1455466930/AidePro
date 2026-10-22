@@ -142,6 +142,60 @@ interface LogRecordDao {
         """
     )
     suspend fun packageCounts(): List<PackageStat>
+
+    // ---------- 与抓包记录的联动 ----------
+
+    /**
+     * 按包名删日志时，同时取出这些日志关联的 http_record id。
+     *
+     * 用于「日志页清空」后同步删掉抓包页的记录。
+     */
+    @Query(
+        """
+        SELECT httpRecordId FROM log_record
+        WHERE httpRecordId > 0
+          AND (:packageName IS NULL OR packageName = :packageName)
+        """
+    )
+    suspend fun httpIdsByLogPackage(packageName: String?): List<Long>
+
+    /**
+     * 按 http_record id 删掉对应的日志。
+     *
+     * 用于「抓包页删除」后同步清掉日志页的对应条目。
+     */
+    @Query("DELETE FROM log_record WHERE httpRecordId IN (:httpIds)")
+    suspend fun deleteByHttpIds(httpIds: List<Long>)
+
+    /**
+     * 清空所有日志，同时返回它们关联的 http_record id。
+     */
+    @Query("SELECT httpRecordId FROM log_record WHERE httpRecordId > 0")
+    suspend fun allHttpIdsFromLogs(): List<Long>
+
+    /** 取单条日志关联的 http_record id */
+    @Query("SELECT httpRecordId FROM log_record WHERE id = :id")
+    suspend fun httpIdOfLog(id: Long): Long?
+
+
+    /** 按抓包记录 id 找日志 id。 */
+    @Query("SELECT id FROM log_record WHERE httpRecordId IN (:httpIds)")
+    suspend fun logIdsByHttpIds(httpIds: List<Long>): List<Long>
+
+    /** 全部有抓包关联的日志 id。 */
+    @Query("SELECT id FROM log_record WHERE httpRecordId > 0")
+    suspend fun allLogIdsWithHttp(): List<Long>
+
+    /** 按包名找有抓包关联的日志 id。 */
+    @Query(
+        """
+        SELECT id FROM log_record
+        WHERE httpRecordId > 0
+          AND (:packageName IS NULL OR packageName = :packageName)
+        """
+    )
+    suspend fun logIdsByPackageWithHttp(packageName: String?): List<Long>
+
 }
 
 data class GroupCount(val g: Int, val c: Int)

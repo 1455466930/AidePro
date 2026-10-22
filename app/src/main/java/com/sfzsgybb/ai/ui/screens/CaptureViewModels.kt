@@ -66,6 +66,8 @@ data class CaptureUiState(
     // ---------- VPN 抓包 ----------
     /** VPN 是否运行 */
     val vpnRunning: Boolean = false,
+    /** 是否处于「暂停记录」状态（链路在跑，只是不入库） */
+    val paused: Boolean = false,
     /** 是否已获得 VPN 授权 */
     val vpnAuthorized: Boolean = false,
     /** 需要用户去系统对话框确认 */
@@ -125,6 +127,8 @@ class CaptureViewModel @Inject constructor(
     private val appList: com.sfzsgybb.ai.mcp.tools.AppListProvider,
     private val analysis: com.sfzsgybb.ai.capture.AnalysisRepository,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
+    /** 抓包页删除时级联清理日志用 */
+    private val logRepo: com.sfzsgybb.ai.log.LogRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(CaptureUiState())
@@ -350,6 +354,23 @@ class CaptureViewModel @Inject constructor(
             refreshMitm()
             notify("代理抓包已停止")
         }
+    }
+
+    /**
+     * 暂停 / 恢复记录。
+     *
+     * 【为什么不是「停止抓包」】
+     * 停止会真的关掉 VPN 和会话：应用瞬间断网（VPN 拆除的短暂空窗），
+     * 继续抓时要重新授权、重新握手，而且当前会话也会结束。
+     *
+     * 暂停只做一件事：不再往库里写新记录。
+     * 抓包链路照常转发，应用完全无感，随时点一下就能继续。
+     */
+    fun togglePause() {
+        val nowPaused = !_state.value.paused
+        com.sfzsgybb.ai.capture.CaptureDataProbe.paused = nowPaused
+        _state.value = _state.value.copy(paused = nowPaused)
+        notify(if (nowPaused) "已暂停记录，应用仍可正常联网" else "已恢复记录")
     }
 
     // ==================== 实时流量列表 ====================
@@ -586,7 +607,11 @@ class CaptureViewModel @Inject constructor(
     /** 删除单个会话（连带其流量记录）。 */
     fun deleteSession(sessionId: String) {
         viewModelScope.launch {
+            // 【级联】该会话下的记录删掉后，日志页对应条目也要清
+            val httpIds = repo.httpIdsOfSession(sessionId)
+            val logIds = logRepo.logIdsByHttp(httpIds)
             val ok = repo.deleteSession(sessionId)
+            if (logIds.isNotEmpty()) logRepo.delete(logIds)
             notify(if (ok) "已删除该会话及其记录" else "删除失败")
             refresh()
         }
@@ -604,8 +629,11 @@ class CaptureViewModel @Inject constructor(
     /** 清空全部会话。 */
     fun clearAll() {
         viewModelScope.launch {
+            // 【级联】先把关联的日志 id 收集起来，删完会话再清日志
+            val logIds = logRepo.logIdsByAllHttp()
             val n = repo.clearAllSessions()
-            notify("已清空 $n 个会话")
+            if (logIds.isNotEmpty()) logRepo.delete(logIds)
+            notify(if (logIds.isEmpty()) "已清空 $n 个会话" else "已清空 $n 个会话及对应日志")
             refresh()
         }
     }
@@ -624,8 +652,15 @@ class CaptureViewModel @Inject constructor(
     fun clearTraffic() {
         viewModelScope.launch {
             val pkg = _state.value.selectedPackage
+            // 【级联】先记下将被删掉的抓包记录 id，再同步删日志
+            val httpIds = repo.httpIdsForPackage(pkg)
+            val logIds = logRepo.logIdsByHttp(httpIds)
             val n = repo.clearTraffic(pkg)
-            notify(if (n > 0) "已删除 $n 条请求" else "没有可删除的请求")
+            if (logIds.isNotEmpty()) logRepo.delete(logIds)
+            notify(
+                if (n > 0) "已删除 $n 条请求" + if (logIds.isEmpty()) "" else "及对应日志"
+                else "没有可删除的请求"
+            )
             loadTraffic()
         }
     }
@@ -658,7 +693,11 @@ class CaptureViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
+            // 【级联】批量删会话时同步清日志
+            val httpIds = ids.flatMap { repo.httpIdsOfSession(it) }
+            val logIds = logRepo.logIdsByHttp(httpIds)
             val n = repo.deleteSessions(ids)
+            if (logIds.isNotEmpty()) logRepo.delete(logIds)
             _state.value = _state.value.copy(selected = emptySet(), selectionMode = false)
             notify("已删除 $n 个会话")
             refresh()

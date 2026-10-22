@@ -35,6 +35,7 @@ fun LogRecordEntity.toModel() = LogRecord(
     keyData = keyData,
     paramDesc = paramDesc,
     resultKind = resultKind,
+        httpRecordId = httpRecordId,
 )
 
 fun LogRecord.toEntity() = LogRecordEntity(
@@ -60,6 +61,7 @@ fun LogRecord.toEntity() = LogRecordEntity(
     keyData = keyData,
     paramDesc = paramDesc,
     resultKind = resultKind,
+        httpRecordId = httpRecordId,
 )
 
 private const val HEADER_SEP = "\u0000"

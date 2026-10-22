@@ -75,6 +75,7 @@ import com.sfzsgybb.ai.ui.theme.Sem
 import com.sfzsgybb.ai.ui.components.cardOutline
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material3.FilledTonalIconButton
 
 /** 分组标题映射，避免中文散落在多处。顺序即界面展示顺序。 */
 private val GROUP_TITLES = linkedMapOf(
@@ -296,9 +297,32 @@ fun AppDetailScreen(
         Column(Modifier.fillMaxSize().padding(padding)) {
             // 标题用应用名，而不是包名最后一段。
             // com.foo.bar 取出来只显示 "bar"，同一个前缀下的应用全长得一样。
+            //
+            // 【操作入口放标题栏】
+            // 之前日志图标挤在卡片里、刷新也在卡片标题行，卡片被撑得很高。
+            // 挪到标题栏后：位置固定、卡片更薄、启动按钮能占满整行。
             AideTopBar(
                 title = state.appLabel.ifBlank { packageName.substringAfterLast('.') },
                 onBack = onBack,
+                actions = {
+                    // 日志：启动后最常做的下一步
+                    IconButton(onClick = onOpenLogs) {
+                        Icon(
+                            Icons.Filled.Description,
+                            contentDescription = "查看日志",
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    // 刷新运行状态：应用在外部被杀了不会自动感知，需要手动刷
+                    IconButton(onClick = { vm.refreshRunning() }) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "刷新运行状态",
+                            modifier = Modifier.size(21.dp),
+                        )
+                    }
+                },
             )
 
         LazyColumn(
@@ -329,8 +353,9 @@ fun AppDetailScreen(
                         Column(Modifier.weight(1f)) {
                             Text("启用 Hook", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                // 说明自动行为，避免用户以为 HTTP 抓包开关自己乱跳
-                                if (state.enabled) "已自动开启 HTTP 抓包；SSL 证书信任需按需手动开"
+                                // 总开关只控制「要不要加载模块」，
+                                // 具体抓什么由下面的子开关决定，不再替用户改
+                                if (state.enabled) "已加载模块，具体抓什么由下方开关决定"
                                 else "关闭后该应用不加载任何模块",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -359,80 +384,53 @@ fun AppDetailScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     elevation = CardDefaults.cardElevation(0.dp),
                 ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            StatusDot(state.targetRunning)
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    if (state.targetRunning) "${state.appLabel} 正在运行" else "${state.appLabel} 未运行",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                                Text(
-                                    "改动开关后需重启目标应用才会生效",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            // 跳到该应用的日志列表：启动前确认开关是否生效、
-                            // 启动后看 Hook 抓到了什么，都在这一个日志页里。
-                            //
-                            // 【图标选择】之前用 List（三条线），容易被当成
-                            // 「切换视图」或「排序」。换成 Description ——
-                            // 文件形状 + 文字行，一眼就是「文字记录 / 日志」。
-                            IconButton(onClick = onOpenLogs) {
-                                Icon(
-                                    Icons.Filled.Description,
-                                    contentDescription = "查看日志",
-                                    modifier = Modifier.size(20.dp),
-                                    tint = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                            IconButton(onClick = { vm.refreshRunning() }) {
-                                Icon(Icons.Filled.Refresh, contentDescription = "刷新状态")
-                            }
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                if (state.targetRunning) "${state.appLabel} 正在运行" else "${state.appLabel} 未运行",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                "改动开关后需重启目标应用才会生效",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { vm.restartApp() },
-                                modifier = Modifier.weight(1f),
-                                // busy 期间两个按钮都禁用：
-                                // 整个流程是 stop → 等 800ms → launch，
-                                // 用户在这近一秒里连点会叠出两套操作
-                                enabled = state.enabled && !state.busy,
-                            ) {
-                                if (state.busy) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.onPrimary,
-                                    )
-                                } else {
-                                    Icon(
-                                        Icons.Filled.Refresh,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                                Text(if (state.busy) "  处理中…" else "  强停并重启")
-                            }
-                            OutlinedButton(
-                                onClick = { vm.launchApp() },
-                                modifier = Modifier.weight(1f),
-                                enabled = !state.busy,
-                            ) {
-                                Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                        // 【按钮合并】
+                        // 之前并列「强停并重启」「启动应用」两个按钮，占地方还容易选错。
+                        // 实际上用户要的永远是「让新配置生效」——
+                        // 应用在跑就强停重启，没在跑就直接启动。
+                        // 现在合成一个，行为由 ViewModel 判断。
+                        //
+                        // 日志入口已移到标题栏，按钮因此能占满整行，更好点。
+                        Button(
+                            onClick = { vm.launchApp() },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !state.busy,
+                            contentPadding = PaddingValues(vertical = 12.dp),
+                        ) {
+                            if (state.busy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                                Text("  处理中…")
+                            } else {
+                                Icon(
+                                    Icons.Filled.PlayArrow,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                )
                                 Text("  启动应用")
                             }
                         }
 
                         if (!state.hasRoot) {
                             Text(
-                                "设备无 root，「强停并重启」会跳转到系统设置页手动停止",
+                                "设备无 root，重启会跳转到系统设置页手动停止",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )

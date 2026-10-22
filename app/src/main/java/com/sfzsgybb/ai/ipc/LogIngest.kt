@@ -66,6 +66,8 @@ internal object LogIngest {
         captureRepository: CaptureRepository,
         logRepository: LogRepository,
     ) {
+        // 暂停记录时不入库
+        if (com.sfzsgybb.ai.capture.CaptureDataProbe.paused) return
         runCatching {
             // 【D4 修复】会话按应用包名隔离：用目标应用的真实包名，
             // 而不是写死 "Hook 抓包"。否则所有被 Hook 应用的数据
@@ -138,6 +140,9 @@ internal object LogIngest {
                     resultCrc = LogRepository.crc(responseBody),
                     size = responseBody.size,
                     time = ts,
+                    // 【双向关联】记住对应的抓包记录 id，
+                    // 删日志时能级联删掉抓包记录，反之亦然。
+                    httpRecordId = recordId,
                 )
             )
         }.onFailure { Log.w(TAG, "ingestHttp 失败: ${it.message}") }

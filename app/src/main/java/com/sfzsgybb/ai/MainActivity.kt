@@ -48,6 +48,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import com.sfzsgybb.ai.ui.screens.CaptureHomeScreen
 import com.sfzsgybb.ai.ui.screens.CaptureTrafficScreen
+import com.sfzsgybb.ai.ui.screens.FridaScriptListScreen
+import com.sfzsgybb.ai.ui.screens.CacheManagerScreen
 
 /**
  * 单 Activity + Compose Navigation。
@@ -165,6 +167,7 @@ private fun AideProRoot() {
                 SettingsScreen(
                     onOpenMcp = { navController.navigate(Dest.McpConsole.route) },
                     onOpenAbout = { navController.navigate(Dest.About.route) },
+                    onOpenCache = { navController.navigate(Dest.CacheSettings.route) },
                 )
             }
 
@@ -242,12 +245,30 @@ private fun AideProRoot() {
                 )
             }
 
+            // Frida 脚本列表
             composable(
                 Dest.FridaEditor.route,
                 arguments = listOf(navArgument(Dest.PACKAGE_ARG) { type = NavType.StringType }),
             ) { entry ->
+                val pkg = entry.arguments?.getString(Dest.PACKAGE_ARG).orEmpty()
+                FridaScriptListScreen(
+                    packageName = pkg,
+                    onBack = { navController.popBackStack() },
+                    onOpenScript = { id -> navController.navigate(Dest.FridaScriptEdit.of(pkg, id)) },
+                )
+            }
+
+            // 编辑某个具体脚本
+            composable(
+                Dest.FridaScriptEdit.route,
+                arguments = listOf(
+                    navArgument(Dest.PACKAGE_ARG) { type = NavType.StringType },
+                    navArgument(Dest.FridaScriptEdit.SCRIPT_ARG) { type = NavType.StringType },
+                ),
+            ) { entry ->
                 FridaEditorScreen(
                     packageName = entry.arguments?.getString(Dest.PACKAGE_ARG).orEmpty(),
+                    scriptId = entry.arguments?.getString(Dest.FridaScriptEdit.SCRIPT_ARG),
                     onBack = { navController.popBackStack() },
                 )
             }
@@ -262,6 +283,9 @@ private fun AideProRoot() {
                 )
             }
 
+            composable(Dest.CacheSettings.route) {
+                CacheManagerScreen(onBack = { navController.popBackStack() })
+            }
             composable(Dest.McpConsole.route) {
                 McpConsoleScreen(onBack = { navController.popBackStack() })
             }

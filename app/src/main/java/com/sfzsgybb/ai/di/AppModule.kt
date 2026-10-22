@@ -98,6 +98,7 @@ object AppModule {
             AppDatabase.MIGRATION_2_3,
             AppDatabase.MIGRATION_3_4,
             AppDatabase.MIGRATION_4_5,
+                AppDatabase.MIGRATION_5_6,
         )
             // 仅允许「降级」时破坏性重建；升级走上面的迁移，不会丢数据
             .fallbackToDestructiveMigrationOnDowngrade()

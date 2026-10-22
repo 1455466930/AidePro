@@ -26,6 +26,21 @@ interface CaptureDao {
     @Query("SELECT * FROM capture_session WHERE state = 'RUNNING' LIMIT 1")
     suspend fun runningSession(): CaptureSessionEntity?
 
+    /**
+     * 全部 RUNNING 会话。
+     *
+     * 【为什么需要这个】
+     * 之前只有 runningSession()（LIMIT 1），而库里可能同时有多个
+     * RUNNING 会话（Hook 一个、代理一个，甚至残留的僵尸会话）。
+     * 单条查询永远返回同一条，导致：
+     *  - 该复用的会话没匹配上 → 每条流量都新建一个会话
+     *  - 抓包历史里堆出几十个只装了一两条记录的空壳会话
+     *
+     * 现在返回全部，由调用方按 (包名 + source) 精确匹配。
+     */
+    @Query("SELECT * FROM capture_session WHERE state = 'RUNNING'")
+    suspend fun runningSessions(): List<CaptureSessionEntity>
+
     @Query("DELETE FROM capture_session WHERE sessionId IN (:ids)")
     suspend fun deleteSessions(ids: List<String>)
 
@@ -145,6 +160,60 @@ interface CaptureDao {
 
     @Query("SELECT COUNT(*) FROM packet_data WHERE sessionId = :sessionId")
     suspend fun packetCount(sessionId: String): Long
+
+    /** 库里还有多少 HTTP 记录（用于校准 MCP 探针）。 */
+    @Query("SELECT COUNT(*) FROM http_record")
+    suspend fun totalHttpCount(): Long
+
+    /** 某会话下的记录数。 */
+    @Query("SELECT COUNT(*) FROM http_record WHERE sessionId = :sessionId")
+    suspend fun httpCountBySession(sessionId: String): Int
+
+    /** 记录与所属会话来源不一致的行（修复历史数据用）。 */
+    @Query(
+        """
+        SELECT h.id AS id, h.packageName AS packageName, h.source AS source
+        FROM http_record h
+        JOIN capture_session s ON h.sessionId = s.sessionId
+        WHERE h.source != s.source
+        """
+    )
+    suspend fun httpRecordsWithMismatchedSource(): List<MismatchRow>
+
+    /** 把某条记录挪到另一个会话。 */
+    @Query("UPDATE http_record SET sessionId = :sessionId WHERE id = :id")
+    suspend fun updateHttpSession(id: Long, sessionId: String)
+
+    /** 把整个会话的记录批量挪到另一个会话（合并碎片会话用）。 */
+    @Query("UPDATE http_record SET sessionId = :to WHERE sessionId = :from")
+    suspend fun moveHttpSession(from: String, to: String)
+
+    /** 把整个会话的报文挪到另一个会话。 */
+    @Query("UPDATE packet_data SET sessionId = :to WHERE sessionId = :from")
+    suspend fun movePacketsSession(from: String, to: String)
+
+    /**
+     * 按会话来源校正记录的 source 字段。
+     *
+     * 【为什么需要】MitmController 早期漏传 source="vpn"，
+     * 会话被标成 hook、记录却写成 vpn，两边都不对。
+     * 会话的 source 是建会话时显式传入的，更可信，以它为准。
+     *
+     * @return 被校正的记录数
+     */
+    @Query(
+        """
+        UPDATE http_record
+        SET source = (
+            SELECT s.source FROM capture_session s WHERE s.sessionId = http_record.sessionId
+        )
+        WHERE sessionId IN (SELECT sessionId FROM capture_session)
+          AND source != (
+            SELECT s.source FROM capture_session s WHERE s.sessionId = http_record.sessionId
+          )
+        """
+    )
+    suspend fun syncRecordSourceWithSession(): Int
 
     /**
      * 某会话的 HTTP 记录（按时间**正序**）。
@@ -266,4 +335,16 @@ interface CaptureDao {
 
     @Query("DELETE FROM capture_session")
     suspend fun clearSessions()
+
+/** 记录与会话来源不一致的行（修复历史数据用）。 */
+data class MismatchRow(
+    val id: Long,
+    val packageName: String,
+    val source: String,
+)
+
+    /** 某会话下所有记录 id。 */
+    @Query("SELECT id FROM http_record WHERE sessionId = :sessionId")
+    suspend fun httpIdsBySession(sessionId: String): List<Long>
+
 }

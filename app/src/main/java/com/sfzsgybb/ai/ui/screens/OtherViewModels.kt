@@ -26,24 +26,51 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
+import com.sfzsgybb.ai.util.CacheEntry
+import com.sfzsgybb.ai.util.AppCache
 
 data class SettingsUiState(
     val global: Map<String, Boolean> = emptyMap(),
     val mcpRunning: Boolean = false,
     val mcpPort: Int = McpConstants.DEFAULT_PORT,
     val versionName: String = BuildConfig.VERSION_NAME,
+    /** 缓存占用（人类可读，如「12.3 MB」）；空表示还没统计 */
+    val cacheSize: String = "",
 )
+
+/**
+ * 缓存管理页状态。
+ */
+data class CacheUiState(
+    val loading: Boolean = true,
+    val entries: List<CacheEntry> = emptyList(),
+    /** 已选中的条目名（默认全选） */
+    val selected: Set<String> = emptySet(),
+    val totalDataBytes: Long = 0,
+    val message: String? = null,
+) {
+    val cacheBytes: Long get() = entries.filter { it.name in selected }.sumOf { it.bytes }
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val configRepository: ConfigRepository,
     private val mcpServer: McpHttpServer,
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
 
     init {
+        // 统计一次缓存占用，设置页显示「可清理 xx MB」
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val ov = AppCache.overview(appContext)
+            _state.value = _state.value.copy(
+                cacheSize = AppCache.formatSize(ov.cacheBytes),
+            )
+        }
+
         viewModelScope.launch {
             configRepository.observeAllGlobal().collect { map ->
                 _state.value = _state.value.copy(global = map, mcpRunning = mcpServer.isRunning)
@@ -200,6 +227,68 @@ class McpConsoleViewModel @Inject constructor(
         )
     }
 }
+
+/**
+ * 缓存管理 ViewModel。
+ *
+ * 【设计取舍】默认全选 —— 这些都是可重新生成的数据，
+ * 用户点进来多半就是想清干净。想保留某一项的可以手动取消勾选。
+ */
+@HiltViewModel
+class CacheViewModel @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(CacheUiState())
+    val state: StateFlow<CacheUiState> = _state.asStateFlow()
+
+    fun load() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val ov = AppCache.overview(context)
+            _state.value = CacheUiState(
+                loading = false,
+                entries = ov.entries,
+                selected = ov.entries.map { it.name }.toSet(),
+                totalDataBytes = ov.totalDataBytes,
+            )
+        }
+    }
+
+    fun toggle(name: String, on: Boolean) {
+        val s = _state.value
+        _state.value = s.copy(
+            selected = if (on) s.selected + name else s.selected - name,
+        )
+    }
+
+    fun selectAll(on: Boolean) {
+        val s = _state.value
+        _state.value = s.copy(selected = if (on) s.entries.map { it.name }.toSet() else emptySet())
+    }
+
+    fun clear() {
+        val s = _state.value
+        val targets = s.entries.filter { it.name in s.selected }
+        if (targets.isEmpty()) {
+            _state.value = s.copy(message = "没有选中任何项目")
+            return
+        }
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val freed = AppCache.clear(context, targets)
+            val ov = AppCache.overview(context)
+            _state.value = _state.value.copy(
+                entries = ov.entries,
+                selected = ov.entries.map { it.name }.toSet(),
+                totalDataBytes = ov.totalDataBytes,
+                message = "已释放 ${AppCache.formatSize(freed)}",
+            )
+        }
+    }
+
+    fun consumeMessage() {
+        _state.value = _state.value.copy(message = null)
+    }
+}
 data class HookListUiState(
     val packageName: String = "",
     val rules: List<HookRule> = emptyList(),
@@ -237,38 +326,83 @@ class HookListViewModel @Inject constructor(
 
 data class FridaUiState(
     val packageName: String = "",
+    /** 当前编辑的脚本 id；空表示还没选 */
+    val scriptId: String = "",
+    val name: String = "未命名脚本",
+    val enabled: Boolean = true,
     val script: String = FridaViewModel.DEFAULT_SCRIPT,
     val savedMessage: String? = null,
     /** 脚本已从磁盘读出来（用于区分「还没加载完」和「用户清空了」） */
     val loaded: Boolean = false,
     /** 磁盘上当前的版本，用来判断是否有未保存改动 */
     val savedScript: String = FridaViewModel.DEFAULT_SCRIPT,
+    val savedName: String = "未命名脚本",
+    val savedEnabled: Boolean = true,
 ) {
-    /** 有未保存改动。 */
-    val dirty: Boolean get() = loaded && script != savedScript
+    /** 有未保存改动（正文、名称、启用状态任一项变了都算）。 */
+    val dirty: Boolean
+        get() = loaded && (script != savedScript || name != savedName || enabled != savedEnabled)
 }
+
+/**
+ * Frida 脚本列表页状态。
+ *
+ * 一个应用可以有多个脚本，用户自己决定启用哪些。
+ */
+data class FridaScriptListUiState(
+    val packageName: String = "",
+    val scripts: List<com.sfzsgybb.ai.frida.FridaScriptStore.Script> = emptyList(),
+    val message: String? = null,
+)
 
 @HiltViewModel
 class FridaViewModel @Inject constructor(
     private val configRepository: ConfigRepository,
 ) : ViewModel() {
 
+    /** 脚本存储（按应用隔离）。 */
+    private val store: com.sfzsgybb.ai.frida.FridaScriptStore by lazy {
+        com.sfzsgybb.ai.frida.FridaScriptStore(com.sfzsgybb.ai.AideProApp.get())
+    }
+
     private val _state = MutableStateFlow(FridaUiState())
     val state: StateFlow<FridaUiState> = _state.asStateFlow()
 
     fun load(pkg: String) {
         viewModelScope.launch {
-            val content = withContext(Dispatchers.IO) {
-                val f = File(scriptDir(pkg), "main.js")
-                if (f.exists()) runCatching { f.readText() }.getOrDefault(DEFAULT_SCRIPT)
-                else DEFAULT_SCRIPT
+            withContext(Dispatchers.IO) {
+                // 优先打开第一个脚本；一个都没有就建一个默认的
+                val list = store.list(pkg)
+                val target = list.firstOrNull()
+                if (target == null) {
+                    val id = store.create(pkg, "默认脚本", DEFAULT_SCRIPT, enabled = true)
+                    val code = store.read(pkg, id) ?: DEFAULT_SCRIPT
+                    _state.value = FridaUiState(
+                        packageName = pkg,
+                        scriptId = id,
+                        name = "默认脚本",
+                        enabled = true,
+                        script = code,
+                        savedScript = code,
+                        savedName = "默认脚本",
+                        savedEnabled = true,
+                        loaded = true,
+                    )
+                } else {
+                    val code = store.read(pkg, target.id) ?: DEFAULT_SCRIPT
+                    _state.value = FridaUiState(
+                        packageName = pkg,
+                        scriptId = target.id,
+                        name = target.name,
+                        enabled = target.enabled,
+                        script = code,
+                        savedScript = code,
+                        savedName = target.name,
+                        savedEnabled = target.enabled,
+                        loaded = true,
+                    )
+                }
             }
-            _state.value = FridaUiState(
-                packageName = pkg,
-                script = content,
-                savedScript = content,
-                loaded = true,
-            )
         }
     }
 
@@ -276,29 +410,99 @@ class FridaViewModel @Inject constructor(
         _state.value = _state.value.copy(script = s)
     }
 
+    fun setName(s: String) {
+        _state.value = _state.value.copy(name = s)
+    }
+
+    fun setEnabled(on: Boolean) {
+        _state.value = _state.value.copy(enabled = on)
+    }
+
     fun save() {
         val s = _state.value
+        if (s.scriptId.isBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
             val ok = runCatching {
-                val dir = scriptDir(s.packageName)
-                if (!dir.exists()) dir.mkdirs()
-                File(dir, "main.js").writeText(s.script)
+                store.save(s.packageName, s.scriptId, s.name.ifBlank { "未命名脚本" }, s.script, s.enabled)
                 true
             }.getOrDefault(false)
             _state.value = _state.value.copy(
                 savedMessage = if (ok) "已保存" else "保存失败：写不进应用私有目录",
                 // 存成功后把基准更新掉，标题的「未保存」才会消失
                 savedScript = if (ok) s.script else _state.value.savedScript,
+                savedName = if (ok) s.name else _state.value.savedName,
+                savedEnabled = if (ok) s.enabled else _state.value.savedEnabled,
             )
+        }
+    }
+
+    // ---------- 多脚本管理 ----------
+
+    /** 打开某个脚本进行编辑。 */
+    fun openScript(pkg: String, id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = store.list(pkg)
+            val meta = list.firstOrNull { it.id == id }
+            val code = store.read(pkg, id) ?: DEFAULT_SCRIPT
+            _state.value = FridaUiState(
+                packageName = pkg,
+                scriptId = id,
+                name = meta?.name ?: "未命名脚本",
+                enabled = meta?.enabled ?: true,
+                script = code,
+                savedScript = code,
+                savedName = meta?.name ?: "未命名脚本",
+                savedEnabled = meta?.enabled ?: true,
+                loaded = true,
+            )
+        }
+    }
+
+    /** 新建一个空脚本并直接进入编辑。 */
+    fun createScript(pkg: String, onCreated: (String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val id = store.create(pkg, "未命名脚本", DEFAULT_SCRIPT, enabled = true)
+            withContext(Dispatchers.Main) { onCreated(id) }
+        }
+    }
+
+    /**
+     * 导入本地脚本文件。
+     *
+     * @param enabled 导入后是否立即启用 —— 交给用户决定，
+     *                默认建议不启用（先看清内容再开）
+     */
+    fun importScript(pkg: String, content: String, fileName: String, enabled: Boolean, onDone: (String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val id = store.import(pkg, content, fileName, enabled)
+            _state.value = _state.value.copy(
+                savedMessage = if (enabled) "已导入并启用：$fileName" else "已导入（未启用）：$fileName",
+            )
+            withContext(Dispatchers.Main) { onDone(id) }
+        }
+    }
+
+    /** 切换某个脚本的启用状态（列表页直接点开关）。 */
+    fun toggleScript(pkg: String, id: String, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            store.setEnabled(pkg, id, enabled)
+            if (_state.value.scriptId == id) {
+                _state.value = _state.value.copy(enabled = enabled, savedEnabled = enabled)
+            }
+        }
+    }
+
+    /** 删除脚本。 */
+    fun deleteScript(pkg: String, id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ok = store.delete(pkg, id)
+            _state.value = _state.value.copy(savedMessage = if (ok) "已删除" else "删除失败")
         }
     }
 
     fun clearMessage() {
         _state.value = _state.value.copy(savedMessage = null)
     }
-
-    private fun scriptDir(pkg: String): File =
-        File(com.sfzsgybb.ai.AideProApp.get().filesDir, "frida/$pkg")
 
     companion object {
         /**

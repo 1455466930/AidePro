@@ -49,6 +49,13 @@ import com.sfzsgybb.ai.ui.components.AideTopBar
 import com.sfzsgybb.ai.ui.components.EmptyState
 import com.sfzsgybb.ai.ui.theme.ScreenPadding
 import kotlinx.coroutines.launch
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import com.sfzsgybb.ai.ui.theme.Sem
 
 /**
  * 抓到的请求列表。
@@ -112,6 +119,16 @@ fun CaptureTrafficScreen(
                 onBack = onBack,
                 actions = {
                     if (running) {
+                        // 暂停 / 恢复：链路照常跑，只是不再记录新数据
+                        IconButton(onClick = { vm.togglePause() }) {
+                            Icon(
+                                if (state.paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                                contentDescription = if (state.paused) "恢复记录" else "暂停记录",
+                                tint = if (state.paused) Sem.success
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        // 真正停止：会关掉 VPN / 会话
                         IconButton(onClick = {
                             if (isHook) vm.stop() else vm.stopVpn()
                             onBack()
@@ -134,7 +151,31 @@ fun CaptureTrafficScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 // ---------- 状态提示 ----------
-                if (!running) {
+                if (state.paused) {
+                    item {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Sem.warningContainer)
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Filled.Pause,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = Sem.warning,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "已暂停记录，应用仍可正常联网。点顶栏 ▶ 继续。",
+                                fontSize = 12.sp,
+                                color = Sem.warning,
+                            )
+                        }
+                    }
+                } else if (!running) {
                     item {
                         Text(
                             "抓包已停止，以下是历史记录",

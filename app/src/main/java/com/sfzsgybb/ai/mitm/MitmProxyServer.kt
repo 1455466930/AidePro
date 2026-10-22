@@ -553,45 +553,73 @@ class MitmProxyServer(
         head: HttpMessageReader.Head,
         owner: String?,
     ) {
-        val url = if (head.uri.startsWith("http")) head.uri
-        else "http://${head.header("Host") ?: "unknown"}${head.uri}"
         val host = (head.header("Host") ?: "").substringBefore(':')
-        val port = (head.header("Host") ?: "").substringAfter(':', "80").toIntOrNull() ?: 80
         if (host.isBlank()) return
+        val port = (head.header("Host") ?: "").substringAfter(':', "80").toIntOrNull() ?: 80
 
         val remote = Socket()
         remote.connect(InetSocketAddress(host, port), config.connectTimeoutMs)
         val remoteOut = BufferedOutputStream(remote.getOutputStream())
-
-        // 重建请求头转发
-        remoteOut.write(head.rawBytes ?: buildRawHead(head))
-        // 把已读的 body 也转过去
-        if (head.bodyBytes.isNotEmpty()) remoteOut.write(head.bodyBytes)
-        remoteOut.flush()
-
-        // 读响应
         val remoteIn = BufferedInputStream(remote.getInputStream(), BUFFER_SIZE)
-        val responseHead = HttpMessageReader.readHead(remoteIn)
-        if (responseHead != null) {
-            val body = HttpMessageReader.readBody(remoteIn, responseHead)
-            clientOut.write(responseHead.rawBytes ?: buildRawHead(responseHead))
-            clientOut.write(body)
-            clientOut.flush()
 
-            totalTransactions.incrementAndGet()
-            listener?.onTransaction(
-                HttpTransaction(
-                    scheme = "http", host = host, port = port,
-                    method = head.method, path = head.uri, url = url,
-                    requestHead = head, requestBody = head.bodyBytes,
-                    responseHead = responseHead, responseBody = body,
-                    startTime = head.receivedAt, endTime = System.currentTimeMillis(),
-                    fromTls = false,
+        try {
+            // 【keep-alive 循环】
+            // 旧实现只处理「一个请求-响应」就 return 关连接。
+            // 但 HTTP/1.1 默认 keep-alive：同一个连接上后续请求全部被丢弃，
+            // 表现为「明明发了请求，抓包页却一条都没有」。
+            // 现在循环处理直到连接关闭或收到 Connection: close。
+            var current: HttpMessageReader.Head? = head
+            var firstRound = true
+
+            while (current != null && running.get()) {
+                val h = current
+
+                // 重建请求头转发（首轮用原始字节，后续轮用重建的）
+                val rawHead = if (firstRound) (h.rawBytes ?: buildRawHead(h)) else buildRawHead(h)
+                remoteOut.write(rawHead)
+                if (h.bodyBytes.isNotEmpty()) remoteOut.write(h.bodyBytes)
+                remoteOut.flush()
+
+                val responseHead = HttpMessageReader.readHead(remoteIn) ?: break
+                val body = HttpMessageReader.readBody(remoteIn, responseHead)
+
+                clientOut.write(responseHead.rawBytes ?: buildRawHead(responseHead))
+                clientOut.write(body)
+                clientOut.flush()
+
+                totalTransactions.incrementAndGet()
+                listener?.onTransaction(
+                    HttpTransaction(
+                        scheme = "http", host = host, port = port,
+                        method = h.method, path = h.uri, url = absoluteUrl(h),
+                        requestHead = h, requestBody = h.bodyBytes,
+                        responseHead = responseHead, responseBody = body,
+                        startTime = h.receivedAt, endTime = System.currentTimeMillis(),
+                        fromTls = false,
+                        // 【归属】之前漏了这一行，明文 HTTP 的事务
+                        // 一律归到「自动抓包」，日志页按应用筛选时找不到
+                        ownerPackage = owner,
+                    )
                 )
-            )
+
+                // 任一方要求关闭就停
+                val closeReq = h.header("Connection")?.equals("close", true) == true
+                val closeResp = responseHead.header("Connection")?.equals("close", true) == true
+                if (closeReq || closeResp) break
+
+                // 读下一个请求；读不到（对端关闭/超时）就结束
+                firstRound = false
+                current = runCatching { HttpMessageReader.readHead(clientIn) }.getOrNull()
+            }
+        } finally {
+            runCatching { remote.close() }
         }
-        runCatching { remote.close() }
     }
+
+    /** 拼出绝对 URL。 */
+    private fun absoluteUrl(h: HttpMessageReader.Head): String =
+        if (h.uri.startsWith("http")) h.uri
+        else "http://${h.header("Host") ?: "unknown"}${h.uri}"
 
     private fun buildRawHead(h: HttpMessageReader.Head): ByteArray {
         val sb = StringBuilder()

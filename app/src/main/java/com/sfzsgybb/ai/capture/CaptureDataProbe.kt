@@ -22,6 +22,21 @@ object CaptureDataProbe {
     @Volatile
     var hasActiveSession: Boolean = false
 
+    /**
+     * 是否处于「暂停记录」状态。
+     *
+     * 【和「停止抓包」的区别】
+     *  - 停止：真的关掉 VPN / 关掉会话，新流量完全不经过我们
+     *  - 暂停：抓包链路照常运行（应用不断网），只是**不往库里写**
+     *
+     * 用户常见需求是「先停一下，把已经抓到的看完」——
+     * 中途想恢复时点一下就行，不用重新授权 VPN、重新等握手。
+     */
+    @Volatile
+    var paused: Boolean = false
+
+    fun isRecording(): Boolean = !paused
+
     fun hasAnyData(): Boolean = hasActiveSession || hasData.get()
 
     fun markData() {
@@ -32,9 +47,18 @@ object CaptureDataProbe {
         hasData.set(false)
     }
 
-    /** 从库加载时同步一次真实状态。 */
-    fun sync(anyData: Boolean, active: Boolean) {
-        hasData.set(anyData)
-        hasActiveSession = active
+    /**
+     * 按数据库真实情况重新计算。
+     *
+     * 【为什么需要这个】
+     * 之前在每处删除路径手写 markCleared()，结果漏了
+     * deleteSessions / delete 两条路径 —— 删完数据后工具列表
+     * 仍然全量暴露。现在删除操作统一调这个方法按实际条数校准，
+     * 不再依赖「记得在每处补一行」。
+     *
+     * @param remaining 库里剩余记录数
+     */
+    fun refreshFromCount(remaining: Long) {
+        hasData.set(remaining > 0)
     }
 }

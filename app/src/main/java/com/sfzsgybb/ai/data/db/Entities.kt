@@ -19,6 +19,8 @@ import androidx.room.PrimaryKey
         Index("payloadCrc"),
         Index(value = ["packageName", "group"]),
         Index("logName"),
+        // 级联删除时按 httpRecordId 反查日志，需要索引
+        Index("httpRecordId"),
     ],
 )
 data class LogRecordEntity(
@@ -45,6 +47,23 @@ data class LogRecordEntity(
     val keyData: ByteArray = ByteArray(0),
     val paramDesc: String = "",
     val resultKind: String = "",
+    /**
+     * 关联的 HTTP 抓包记录 id（0 表示不是网络类日志）。
+     *
+     * 【为什么要这个字段】
+     * Hook 抓包和代理抓包都会同时写两张表：
+     * `http_record`（抓包页用）和 `log_record`（日志页用）。
+     * 之前两张表各删各的 —— 日志页清空后抓包页还有数据，
+     * 反过来也一样，用户看到「删了但没删干净」。
+     * 有了这个关联字段，删除时可以双向级联。
+     *
+     * 【必须写 defaultValue】
+     * 迁移语句里用了 `DEFAULT 0`，Room 校验表结构时会逐字段比对默认值。
+     * 只写 Kotlin 的 `= 0`（构造默认参数）不会在 SQL 层留下 DEFAULT，
+     * 两者对不上就会抛 "Migration didn't properly handle"。
+     */
+    @ColumnInfo(defaultValue = "0")
+    val httpRecordId: Long = 0,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

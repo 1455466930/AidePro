@@ -20,6 +20,7 @@ class AideProApp : Application() {
     @Inject lateinit var configRepository: ConfigRepository
     @Inject lateinit var mcpServer: McpHttpServer
     @Inject lateinit var serviceHost: AlgorithmServiceHost
+    @Inject lateinit var captureRepository: com.sfzsgybb.ai.capture.CaptureRepository
 
     /** 全局协程作用域。 */
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -47,6 +48,23 @@ class AideProApp : Application() {
         }
 
         appScope.launch {
+            // 【数据修复】早期版本把 Hook / 代理的数据混进了同一个会话，
+            // 导致「抓包历史条数」和「按来源过滤条数」对不上。
+            // 这里把记录迁回各自来源的会话，并重算每个会话的记录数。
+            runCatching {
+                val moved = captureRepository.repairSessionSources()
+                if (moved > 0) Log.i(TAG, "已修复 $moved 条归属错误的抓包记录")
+            }.onFailure { Log.w(TAG, "修复会话归属失败", it) }
+
+            // 【探针校准】冷启动时内存标志是空的，但库里可能还有历史抓包数据。
+            // 不同步的话 MCP 会误判成「没有数据」，把查询类工具全藏起来，
+            // 用户明明有历史记录却看不到相关工具。
+            runCatching {
+                val has = captureRepository.hasAnyStoredRecord()
+                com.sfzsgybb.ai.capture.CaptureDataProbe.refreshFromCount(if (has) 1L else 0L)
+                Log.i(TAG, "抓包探针已校准: hasData=$has")
+            }.onFailure { Log.w(TAG, "校准抓包探针失败", it) }
+
             val enabled = runCatching {
                 configRepository.getGlobal(GlobalSwitch.MCP_HTTP_ENABLED)
             }.getOrDefault(false)

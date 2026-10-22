@@ -65,6 +65,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import com.sfzsgybb.ai.ui.components.cardOutline
+import androidx.compose.material3.Switch
+import com.sfzsgybb.ai.ui.theme.Sem
 
 /**
  * 项目开源地址。
@@ -81,6 +83,7 @@ private const val PROJECT_REPO_URL = "https://github.com/1455466930/AidePro"
 fun SettingsScreen(
     onOpenMcp: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenCache: () -> Unit = {},
     vm: SettingsViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -129,6 +132,16 @@ fun SettingsScreen(
             }
 
             item { SectionHeader("其他") }
+            item {
+                // 缓存管理：显示当前占用，点进去可选择性清理
+                SettingsNavRow(
+                    title = "缓存管理",
+                    subtitle = if (state.cacheSize.isBlank()) "查看并清理临时文件"
+                    else "可清理 ${state.cacheSize}",
+                    active = false,
+                    onClick = onOpenCache,
+                )
+            }
             item {
                 // 开源地址：点一下用浏览器打开仓库
                 val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -577,13 +590,21 @@ private fun AddRuleDialog(onDismiss: () -> Unit, onConfirm: (HookRule) -> Unit) 
 @Composable
 fun FridaEditorScreen(
     packageName: String,
+    scriptId: String? = null,
     onBack: () -> Unit,
     vm: FridaViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val ctx = LocalContext.current
-    LaunchedEffect(packageName) { vm.load(packageName) }
+    // 有 scriptId 就打开指定脚本，否则打开第一个（首次进入时的兜底）
+    LaunchedEffect(packageName, scriptId) {
+        if (scriptId != null && scriptId.isNotBlank()) {
+            vm.openScript(packageName, scriptId)
+        } else {
+            vm.load(packageName)
+        }
+    }
 
     // 保存结果反馈：之前 savedMessage 设了却没人显示，
     // 用户点「保存」后完全不知道到底存没存上。
@@ -623,6 +644,34 @@ fun FridaEditorScreen(
                     ) { Text("保存") }
                 },
             )
+            // 脚本名 + 启用开关
+            //
+            // 名称可改（列表页靠它区分）；启用状态决定注入时是否执行。
+            // 之前只有一个固定 main.js，既不能命名也没法单独关闭。
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = ScreenPadding, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = state.name,
+                    onValueChange = vm::setName,
+                    modifier = Modifier.weight(1f),
+                    label = { Text("脚本名称", fontSize = 11.sp) },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    shape = RoundedCornerShape(8.dp),
+                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Switch(checked = state.enabled, onCheckedChange = vm::setEnabled)
+                    Text(
+                        if (state.enabled) "启用" else "停用",
+                        fontSize = 10.sp,
+                        color = if (state.enabled) Sem.success
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             Text(
                 text = packageName,
                 style = MaterialTheme.typography.bodySmall,

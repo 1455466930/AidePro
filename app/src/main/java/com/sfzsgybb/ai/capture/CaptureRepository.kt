@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.net.URI
 import java.util.UUID
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 抓包仓库。
@@ -57,6 +58,118 @@ class CaptureRepository(private val dao: CaptureDao) {
     private fun touchSessionProbe(hasData: Boolean) {
         if (hasData) CaptureDataProbe.markData()
     }
+
+    /**
+     * 库里是否还有抓包记录（冷启动时校准探针用）。
+     *
+     * 和 [hasAnySession] 的区别：这个**真的查库**，是 suspend 的；
+     * hasAnySession 只读内存标志，供 MCP 的 availability() 同步调用。
+     */
+    suspend fun hasAnyStoredRecord(): Boolean = runCatching {
+        dao.totalHttpCount() > 0
+    }.getOrDefault(false)
+
+    /**
+     * 修复历史数据：把混进错误会话的记录迁回它自己来源的会话。
+     *
+     * 【背景】早期版本 ensureOrCreateSession 只比对包名、不看 source，
+     * 导致 Hook 会话里混进了 VPN 记录（或反过来）。
+     * 表现是「抓包历史显示的条数」和「按来源过滤后的条数」对不上。
+     *
+     * 这里按 (包名, source) 把记录重新归位，然后重算每个会话的记录数。
+     *
+     * @return 被迁移的记录数
+     */
+    suspend fun repairSessionSources(): Int = runCatching {
+        val all = dao.sessions(1000)
+        val byKey = all.associateBy { "${it.packageName}|${it.source}" }.toMutableMap()
+        var moved = 0
+
+        // 找出所有「记录来源 != 会话来源」的组合
+        val mismatches = dao.httpRecordsWithMismatchedSource()
+        for (m in mismatches) {
+            val key = "${m.packageName}|${m.source}"
+            // 找 (包名, source) 一致的会话；没有就新建一个
+            var target = byKey[key]
+            if (target == null) {
+                val created = start(m.packageName, source = m.source)
+                val row = dao.session(created.sessionId)
+                if (row == null) continue
+                byKey[key] = row
+                target = row
+            }
+            dao.updateHttpSession(m.id, target.sessionId)
+            moved++
+        }
+
+        // 【补充】有些记录 source 和会话 source 都不对（入库时两边都写错了），
+        // 上面那条查询抓不到。这里按「会话 source」统一校正记录，
+        // 因为会话的 source 更可靠（它是创建时显式传入的）。
+        val fixedSource = dao.syncRecordSourceWithSession()
+
+        // 【补充2】合并碎片会话。
+        // 早期 runningSession() 是 LIMIT 1，导致同 (包名, source) 下
+        // 堆出多个 RUNNING 会话。这里把后建的记录并进最早那个，
+        // 其余标为 STOPPED，历史列表才干净。
+        val merged = mergeFragmentedSessions()
+
+        if (moved > 0 || fixedSource > 0 || merged > 0) {
+            android.util.Log.i(
+                "CaptureRepository",
+                "会话修复：迁移 $moved 条，校正来源 $fixedSource 条，合并碎片会话 $merged 个"
+            )
+        }
+        // 无论是否迁移，都按实际条数重算一遍计数器
+        recomputeAllRecordCounts()
+        moved + fixedSource
+    }.getOrElse {
+        android.util.Log.w("CaptureRepository", "修复会话来源失败: ${it.message}")
+        0
+    }
+
+    /**
+     * 合并同 (包名, source) 下的多个 RUNNING 会话。
+     *
+     * 【背景】runningSession() 曾用 LIMIT 1，匹配不上就新建，
+     * 一次代理抓包能堆出十几个只装一两条记录的碎片会话。
+     * 这里保留每组最早的那个，把其余会话的记录并过来并停掉。
+     *
+     * @return 被合并掉的会话数
+     */
+    private suspend fun mergeFragmentedSessions(): Int = runCatching {
+        val groups = dao.runningSessions()
+            .groupBy { "${it.packageName}|${it.source}" }
+            .filter { it.value.size > 1 }
+
+        var mergedCount = 0
+        for ((_, list) in groups) {
+            // 保留最早创建的那个
+            val keeper = list.minByOrNull { it.startedAt } ?: continue
+            for (dup in list) {
+                if (dup.sessionId == keeper.sessionId) continue
+                // 把碎片会话的记录并过来
+                dao.moveHttpSession(dup.sessionId, keeper.sessionId)
+                dao.movePacketsSession(dup.sessionId, keeper.sessionId)
+                // 碎片会话停掉
+                dao.upsertSession(
+                    dup.copy(state = CaptureState.STOPPED.name, stoppedAt = System.currentTimeMillis())
+                )
+                mergedCount++
+            }
+        }
+        mergedCount
+    }.getOrElse {
+        android.util.Log.w("CaptureRepository", "合并碎片会话失败: ${it.message}")
+        0
+    }
+
+    /** 按实际条数重算每个会话的 recordCount。 */
+    private suspend fun recomputeAllRecordCounts() = runCatching {
+        for (s in dao.sessions(1000)) {
+            val n = dao.httpCountBySession(s.sessionId)
+            if (n != s.recordCount) dao.updateRecordCount(s.sessionId, n)
+        }
+    }.getOrNull()
 
     /**
      * 取当前活跃会话 ID。
@@ -102,24 +215,66 @@ class CaptureRepository(private val dao: CaptureDao) {
         packageName: String = "自动抓包",
         source: String = "hook",
     ): String? {
-        // 1) 内存中的活跃会话，包名一致才复用
-        activeSessionId?.let { id ->
-            if (activePackage == packageName) return id
+        // 【并发保护】
+        // MITM 同时处理十几个连接，每个都调这个方法。
+        // 没有锁时：大家都查不到已有会话 → 大家一起新建 → 一次抓包堆出十几个空会话。
+        // 用互斥锁把「查 + 建」做成原子操作。
+        return sessionLock.withLock {
+            ensureOrCreateSessionLocked(packageName, source)
         }
-        // 2) 数据库里的 RUNNING 会话，包名一致才复用
-        val running = runCatching { dao.runningSession() }.getOrNull()
-        if (running != null && running.packageName == packageName) {
+    }
+
+    /** 会话创建/查找的互斥锁。 */
+    private val sessionLock = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun ensureOrCreateSessionLocked(
+        packageName: String,
+        source: String,
+    ): String? {
+        // 【必须同时匹配包名和来源】
+        // 之前只比包名：Hook 会话会被 VPN 数据复用，
+        // 结果一个会话里混着两种链路的数据，
+        // 抓包历史显示的总数和按来源过滤后的条数对不上。
+        // 现在 hook 和 vpn 各自独立建会话。
+
+        // 1) 内存中的活跃会话
+        activeSessionId?.let { id ->
+            if (activePackage == packageName && activeSource == source) return id
+        }
+
+        // 2) 数据库里的 RUNNING 会话
+        //
+        // 【关键】原来是 `dao.runningSession()`（LIMIT 1）——
+        // 库里同时有多个 RUNNING 会话时（Hook 一个、代理一个），
+        // 它每次都返回同一条，包名或来源对不上就新建，
+        // 结果每条 VPN 流量都建一个新会话，抓包历史里堆出几十个碎片会话。
+        // 现在取全部 RUNNING，按 (包名 + 来源) 精确匹配。
+        val running = runCatching {
+            dao.runningSessions().firstOrNull {
+                it.packageName == packageName && it.source == source
+            }
+        }.getOrNull()
+
+        if (running != null) {
             activeSessionId = running.sessionId
             activePackage = running.packageName
             activeFilterLocal = running.filterLocalRequests
             activeSource = running.source
             activeStartedAt = running.startedAt
+            // 【探针】复用已有会话也要置位，否则 MCP 会误判成「没有抓包」，
+            // 把查询类工具全藏起来（走 VPN 抓包时就是这条路径）
+            CaptureDataProbe.hasActiveSession = true
+            CaptureDataProbe.markData()
             return running.sessionId
         }
+
         // 3) 都没有匹配的 → 新建
         return try {
             val s = start(packageName, source = source)
-            android.util.Log.i("CaptureRepository", "自动创建会话: ${s.sessionId} pkg=$packageName source=$source")
+            android.util.Log.i(
+                "CaptureRepository",
+                "自动创建会话: ${s.sessionId} pkg=$packageName source=$source"
+            )
             activeSessionId = s.sessionId
             s.sessionId
         } catch (t: Throwable) {
@@ -184,6 +339,9 @@ class CaptureRepository(private val dao: CaptureDao) {
         if (id == activeSessionId) {
             activeSessionId = null
             activePackage = null
+            // 停止后不再有活跃会话；若库里还有历史记录，工具仍需保留
+            CaptureDataProbe.hasActiveSession = false
+            runCatching { CaptureDataProbe.refreshFromCount(dao.totalHttpCount()) }
         }
         return true
     }
@@ -206,6 +364,8 @@ class CaptureRepository(private val dao: CaptureDao) {
         // 否则删完会话会留下一堆指向不存在记录的孤儿堆栈
         dao.deleteStacksBySessions(ids)
         dao.deleteHttpBySessions(ids)
+        // 校准探针：删完可能一条不剩，MCP 工具要跟着收起来
+        runCatching { CaptureDataProbe.refreshFromCount(dao.totalHttpCount()) }
         dao.deletePacketsBySessions(ids)
         dao.deleteSessions(ids)
         if (ids.contains(activeSessionId)) {
@@ -240,6 +400,7 @@ class CaptureRepository(private val dao: CaptureDao) {
         dao.clearHttp()
         dao.clearPackets()
         dao.clearSessions()
+        runCatching { CaptureDataProbe.refreshFromCount(dao.totalHttpCount()) }
         return all.size
     }
 
@@ -504,6 +665,7 @@ class CaptureRepository(private val dao: CaptureDao) {
         if (httpIds.isNotEmpty()) dao.deleteStacksOf(httpIds)
         if (httpIds.isNotEmpty()) dao.deleteHttp(httpIds)
         if (pktIds.isNotEmpty()) dao.deletePackets(pktIds)
+        runCatching { CaptureDataProbe.refreshFromCount(dao.totalHttpCount()) }
         return httpIds.size + pktIds.size
     }
 
@@ -513,6 +675,8 @@ class CaptureRepository(private val dao: CaptureDao) {
         dao.clearPackets()
         runCatching { dao.deleteOrphanStacks() }
         activeSessionId = null
+        CaptureDataProbe.hasActiveSession = false
+        CaptureDataProbe.markCleared()
     }
 
     /**
@@ -543,7 +707,7 @@ class CaptureRepository(private val dao: CaptureDao) {
         }
         // 会话本身的记录数清零（会话保留，便于继续抓）
         dao.resetAllRecordCounts()
-        if (packageName.isNullOrBlank()) CaptureDataProbe.markCleared()
+        runCatching { CaptureDataProbe.refreshFromCount(dao.totalHttpCount()) }
         httpIds.size
     }.getOrElse {
         android.util.Log.w("CaptureRepository", "clearTraffic 失败: ${it.message}")
@@ -572,4 +736,16 @@ class CaptureRepository(private val dao: CaptureDao) {
         }
         return sb.toString()
     }
+
+    /** 某个会话下所有记录 id（级联删日志用）。 */
+    suspend fun httpIdsOfSession(sessionId: String): List<Long> =
+        runCatching { dao.httpIdsBySession(sessionId) }.getOrDefault(emptyList())
+
+    /** 某个应用（或全部）的记录 id（级联删日志用）。 */
+    suspend fun httpIdsForPackage(packageName: String?): List<Long> =
+        runCatching {
+            if (packageName.isNullOrBlank()) dao.allHttpIds()
+            else dao.httpIdsByPackage(packageName)
+        }.getOrDefault(emptyList())
+
 }

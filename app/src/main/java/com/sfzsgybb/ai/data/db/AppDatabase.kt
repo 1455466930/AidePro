@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ConnectRecordEntity::class,
         StackRecordEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -71,5 +71,21 @@ abstract class AppDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE capture_session ADD COLUMN source TEXT NOT NULL DEFAULT 'hook'")
             }
         }
-    }
+    
+        /**
+         * v5 到 v6：log_record 增加 httpRecordId，关联到 http_record。
+         *
+         * 让日志页和抓包页的数据能互相级联删除。
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE log_record ADD COLUMN httpRecordId INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_log_record_httpRecordId ON log_record(httpRecordId)"
+                )
+            }
+        }
+}
 }

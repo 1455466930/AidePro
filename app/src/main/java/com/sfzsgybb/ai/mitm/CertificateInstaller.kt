@@ -56,6 +56,24 @@ class CertificateInstaller(private val context: Context) {
         val exportedPath: String? = null,
     )
 
+    /**
+     * 确保 CA 已初始化，返回是否可用。
+     *
+     * 【为什么需要这个】
+     * CertificateManager 原本只在 MitmController 启动时初始化 ——
+     * 也就是「必须先开代理抓包，才能导出证书」。
+     * 但导出证书恰恰是**开抓包之前**要做的准备动作，逻辑上倒过来了。
+     *
+     * 这里按需初始化：证书和私钥都在 APK 的 assets 里，随时可读。
+     */
+    private fun ensureCaReady(): Boolean {
+        val m = CertificateManager
+        if (m.isInitialized) return true
+        return m.init { path ->
+            runCatching { context.assets.open(path).use { it.readBytes() } }.getOrNull()
+        }
+    }
+
     // ==================== 导出 ====================
 
     /**
@@ -65,8 +83,10 @@ class CertificateInstaller(private val context: Context) {
      * 导出的文件可以直接在系统设置里安装。
      */
     fun exportToDownloads(): Result {
+        if (!ensureCaReady()) {
+            return Result(false, "读不到内置 CA 证书：${CertificateManager.errorMessage ?: "未知原因"}")
+        }
         val m = CertificateManager
-        if (!m.isInitialized) return Result(false, "CA 未初始化")
 
         val pem = m.caCertificatePem() ?: return Result(false, "读不到 CA 证书")
         val der = m.caCertificateDer() ?: return Result(false, "读不到 CA 证书")
@@ -109,8 +129,11 @@ class CertificateInstaller(private val context: Context) {
      * 两处都写 = 立即能用 + 重启不丢。
      */
     fun installToSystem(): Result {
+        // 和导出一样，不依赖代理抓包是否已启动
+        if (!ensureCaReady()) {
+            return Result(false, "读不到内置 CA 证书：${CertificateManager.errorMessage ?: "未知原因"}")
+        }
         val m = CertificateManager
-        if (!m.isInitialized) return Result(false, "CA 未初始化")
 
         // 【关键 Bug 修复】系统信任区要 PEM 文本，不是 DER 二进制。
         //

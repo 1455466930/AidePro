@@ -77,6 +77,8 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.mutableIntStateOf
 import com.sfzsgybb.ai.ui.theme.Sem
 import com.sfzsgybb.ai.ui.components.cardOutline
+import com.sfzsgybb.ai.ui.components.AppIconByPackage
+import androidx.compose.material.icons.filled.DeleteSweep
 
 /**
  * 日志页。
@@ -124,24 +126,41 @@ fun LogListScreen(
         vm.setPackage(null)
     }
 
-    if (state.packageFilter == null) {
-        AppLogList(
-            state = state,
-            onOpenApp = { vm.setPackage(it) },
-            onRefresh = { vm.loadAppOptions(); vm.refresh() },
-            onSearch = { vm.setAppQuery(it) },
-            onDeleteApp = { vm.deleteAppLogs(it) },
-        )
-    } else {
-        AppLogDetail(
-            state = state,
-            onBack = { vm.setPackage(null) },
-            onOpenLog = onOpenLog,
-            onGroup = { vm.setGroup(it) },
-            onRefresh = { vm.refresh() },
-            onSearch = { vm.search(it) },
-            onLoadMore = { vm.loadMore() },
-            vm = vm,
+    // 操作结果提示（清空日志等）
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(state.message) {
+        state.message?.let {
+            snackbar.showSnackbar(it)
+            vm.consumeMessage()
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        if (state.packageFilter == null) {
+            AppLogList(
+                state = state,
+                onOpenApp = { vm.setPackage(it) },
+                onRefresh = { vm.loadAppOptions(); vm.refresh() },
+                onSearch = { vm.setAppQuery(it) },
+                onDeleteApp = { vm.deleteAppLogs(it) },
+                onClearAll = { vm.clearAllLogs() },
+            )
+        } else {
+            AppLogDetail(
+                state = state,
+                onBack = { vm.setPackage(null) },
+                onOpenLog = onOpenLog,
+                onGroup = { vm.setGroup(it) },
+                onRefresh = { vm.refresh() },
+                onSearch = { vm.search(it) },
+                onLoadMore = { vm.loadMore() },
+                onClearCurrent = { vm.clearCurrentLogs() },
+                vm = vm,
+            )
+        }
+        SnackbarHost(
+            hostState = snackbar,
+            modifier = Modifier.align(Alignment.BottomCenter),
         )
     }
 }
@@ -159,6 +178,8 @@ private fun AppLogList(
     onRefresh: () -> Unit,
     onSearch: (String) -> Unit,
     onDeleteApp: (String) -> Unit,
+    /** 清空全部应用的日志 */
+    onClearAll: () -> Unit,
 ) {
     // 待删除的应用（长按后设置，用户确认才真删）
     var pendingDelete by remember { mutableStateOf<LogAppOption?>(null) }
@@ -169,6 +190,14 @@ private fun AppLogList(
             title = "日志",
             actions = {
                 IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "刷新") }
+                // 清空全部日志：放在刷新右边，和抓包页的操作位置保持一致
+                IconButton(onClick = onClearAll) {
+                    Icon(
+                        Icons.Filled.DeleteSweep,
+                        contentDescription = "清空全部日志",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
             },
         )
 
@@ -385,6 +414,8 @@ private fun AppLogDetail(
     onRefresh: () -> Unit,
     onSearch: (String) -> Unit,
     onLoadMore: () -> Unit,
+    /** 清空当前应用的日志 */
+    onClearCurrent: () -> Unit,
     vm: LogListViewModel,
 ) {
     val listState = rememberLazyListState()
@@ -415,6 +446,14 @@ private fun AppLogDetail(
                     modifier = Modifier.padding(end = 4.dp),
                 )
                 IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "刷新") }
+                // 清空该应用的日志
+                IconButton(onClick = onClearCurrent) {
+                    Icon(
+                        Icons.Filled.DeleteSweep,
+                        contentDescription = "清空该应用日志",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
             },
         )
 
@@ -523,85 +562,101 @@ private fun LogRow(
     appLabel: String? = null,
 ) {
     val groupColor = GroupColors.of(log.group)
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .padding(horizontal = ScreenPadding, vertical = 9.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Chip(LogGroup.label(log.group), groupColor)
-            // 文件读写方向标签最多占一个，避免一行里塞太多 chip
-            fileOpTag(log.logName)?.let { (tag, color) ->
-                Chip(tag, color)
-            }
-            // 【标题层】14sp / SemiBold / onSurface —— 未读时再加粗一级，
-            // 不只用颜色小圆点区分（色弱和深色模式下圆点几乎看不见）
-            Text(
-                text = log.logName.ifBlank { log.className.substringAfterLast('.') },
-                fontSize = 14.sp,
-                fontWeight = if (log.isRead) FontWeight.Medium else FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                modifier = Modifier.weight(1f),
+        // 应用图标：一眼看出这条日志来自哪个应用。
+        // 按应用筛选时也显示 —— 统一的行布局比「有时有有时没有」更好扫视。
+        if (!log.packageName.isNullOrBlank()) {
+            AppIconByPackage(
+                packageName = log.packageName,
+                size = 24.dp,
+                modifier = Modifier.padding(top = 1.dp),
             )
-            if (!log.isRead) {
-                // 未读标记：图标 + 圆点双保险
-                Box(
-                    Modifier
-                        .size(6.dp)
-                        .clip(RoundedCornerShape(50))
-                        .background(groupColor),
+        }
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Chip(LogGroup.label(log.group), groupColor)
+                // 文件读写方向标签最多占一个，避免一行里塞太多 chip
+                fileOpTag(log.logName)?.let { (tag, color) ->
+                    Chip(tag, color)
+                }
+                // 【标题层】14sp / SemiBold / onSurface —— 未读时再加粗一级，
+                // 不只用颜色小圆点区分（色弱和深色模式下圆点几乎看不见）
+                Text(
+                    text = log.logName.ifBlank { log.className.substringAfterLast('.') },
+                    fontSize = 14.sp,
+                    fontWeight = if (log.isRead) FontWeight.Medium else FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!log.isRead) {
+                    // 未读标记：图标 + 圆点双保险
+                    Box(
+                        Modifier
+                            .size(6.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(groupColor),
+                    )
+                }
+                // 【元信息层】11sp + 降到 60% 不透明度
+                Text(
+                    formatTimeShort(log.time),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                 )
             }
-            // 【元信息层】11sp + 降到 60% 不透明度
-            Text(
-                formatTimeShort(log.time),
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-            )
-        }
-        // 应用名：看「全部应用」时能一眼分辨日志来源（元信息层）
-        if (!showApp && !log.packageName.isNullOrBlank()) {
-            Text(
-                text = appLabel ?: log.packageName.orEmpty(),
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.75f),
-                maxLines = 1,
-            )
-        }
-        // 【正文层】12sp mono
-        if (log.payloadBrief.isNotBlank()) {
-            Text(
-                text = log.payloadBrief,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                maxLines = 2,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
-            )
-        }
-        // 操作细节：比如「⚠ 覆盖写入（会清空原内容）」—— 默认折一行
-        if (log.paramDesc.isNotBlank()) {
-            Text(
-                text = log.paramDesc,
-                fontSize = 11.sp,
-                maxLines = 1,
-                color = if (log.paramDesc.startsWith("⚠")) Sem.warning
-                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            )
-        }
-        if (log.resultBrief.isNotBlank()) {
-            Text(
-                text = "→ " + log.resultBrief,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                maxLines = 2,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
-            )
+            // 应用名：看「全部应用」时能一眼分辨日志来源（元信息层）
+            if (!showApp && !log.packageName.isNullOrBlank()) {
+                Text(
+                    text = appLabel ?: log.packageName.orEmpty(),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.75f),
+                    maxLines = 1,
+                )
+            }
+            // 【正文层】12sp mono
+            if (log.payloadBrief.isNotBlank()) {
+                Text(
+                    text = log.payloadBrief,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f),
+                )
+            }
+            // 操作细节：比如「⚠ 覆盖写入（会清空原内容）」—— 默认折一行
+            if (log.paramDesc.isNotBlank()) {
+                Text(
+                    text = log.paramDesc,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    color = if (log.paramDesc.startsWith("⚠")) Sem.warning
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                )
+            }
+            if (log.resultBrief.isNotBlank()) {
+                Text(
+                    text = "→ " + log.resultBrief,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    maxLines = 2,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f),
+                )
+            }
         }
     }
 }

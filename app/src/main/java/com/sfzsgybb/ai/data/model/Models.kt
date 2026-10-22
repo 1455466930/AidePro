@@ -45,6 +45,8 @@ data class LogRecord(
     val paramDesc: String = "",
     /** 结果类别，如 加密结果 / 解密结果 / 摘要结果 / 签名结果 / MAC 结果 */
     val resultKind: String = "",
+    /** 关联的 HTTP 抓包记录 id（0 = 非网络类日志） */
+    val httpRecordId: Long = 0,
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
